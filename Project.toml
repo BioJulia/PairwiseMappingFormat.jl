@@ -1,0 +1,22 @@
+name = "PairwiseMappingFormat"
+uuid = "30ee2946-b067-41c0-bed2-0900b78dbe59"
+authors = ["Jakob Nybo Nissen <jakobnybonissen@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+FormatSpecimens = "3372ea36-2a1a-11e9-3eb7-996970b6ffbd"
+MemViews = "a791c907-b98b-4e44-8f4d-e4c2362c6b2f"
+SAMAuxData = "e99d641e-1821-45d7-9150-ecb7bf333fe1"
+StringViews = "354b36f9-a18e-4713-926e-db85100087ba"
+
+[compat]
+StringViews = "1.3.3"
+
+[extras]
+FormatSpecimens = "3372ea36-2a1a-11e9-3eb7-996970b6ffbd"
+MemViews = "a791c907-b98b-4e44-8f4d-e4c2362c6b2f"
+SAMAuxData = "e99d641e-1821-45d7-9150-ecb7bf333fe1"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test", "FormatSpecimens", "MemViews", "SAMAuxData"]
