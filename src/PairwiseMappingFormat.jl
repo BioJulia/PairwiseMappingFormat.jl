@@ -1,4 +1,8 @@
-# TODO: Module doc
+"""
+    module PairwiseMappingFormat
+
+Parse files of the PairwisemAppingFormat (PAF) format.
+"""
 module PairwiseMappingFormat
 
 export PAFReader,
@@ -10,37 +14,62 @@ export PAFReader,
     target_coverage
 
 # Not exported, because this very PAF-specific, and operates on foreign types.
-public try_parse
+public try_parse, ParserException, Errors, Err
 
-using StringViews: StringView
+using PrecompileTools: @compile_workload, @setup_workload, @recompile_invalidations
+
+# Note: I don't like to do this. Loading StringViews should cause widespread
+# invalidation, but it does.
+# This is because Base contain type unstable inference with AbstractString,
+# which doesn't cause a lot of issues in Base since there aren't a lot of
+# AbstractStrings in Base.
+@recompile_invalidations begin
+    using StringViews: StringView
+end
+
 using MemViews: MemView, ImmutableMemView
 
-using SAMAuxData.SAM: Auxiliary
+using XAMAuxData.SAM: Auxiliary
 
 """
-    PAFRecord(buffer_size::Int=2)
+    PAFRecord(buffer_size::Int)
 
-Mutable type representing a line PAF line. The content of the record
+Mutable type representing a single PAF line. The content of the record
 is accessed through its properties.
+
+# Examples
+```jldoctest
+julia> record = PAFReader(first, open(path_to_paf));
+
+julia> record.qname
+"query1"
+
+julia> record.qlen
+301156
+```
+
+See also: [`PAFReader`](@ref)
 
 # Extended help
 The following properties may be used:
-* `qname` and `tname` return `StringView`s, and give the name
+* `qname` and `tname::StringView`s, and give the name
   if the query and target. These may be empty or contain any
-  bytes except a tab
-* `qlen` and `tlen` are `Int`s, and gives the length of the query and target
-  sequences, respectively. This must be > 0
-* `qstart`, `qend`, `tstart`, `tend` are `Int`s, and give the starting and
+  bytes except a `\t` and `\n`.
+* `qlen` and `tlen::Int`, and gives the length of the query and target
+  sequences, respectively. This must be > 0.
+* `qstart`, `qend`, `tstart` and `tend::Int`, and give the starting and
   ending positions of the alignments on the query and target strand.
-  These uses one-based, closed interval indexing like normal in Julia.
-  The ending positions are always >= the starting ones
+  These uses one-based, closed interval indexing as usual in Julia, but unlike
+  the underlying PAF format.
+  The ending positions are always >= the starting ones, and the ending positions
+  are always <= the query/target lengths.
 * `matches::Int` gives the number of nucleotides / residues which match
   (i.e. are equal) in the alignment.
 * `alnlen::Int` gives the length of the alignment
 * `mapq::Union{Int, Nothing}` gives the mapping quality, or `nothing` if 
-  this information is unavailable
+  this information is unavailable.
 * `is_rc::Bool` tells if the query and target strands are reverse-complement
-  relative to each other
+  relative to each other.
 """
 mutable struct PAFRecord
     # Data contains query name, subject name, AUX data,
@@ -84,7 +113,7 @@ end
 # For tab completion
 Base.propertynames(::PAFRecord) = (:qname, :tname, :mapq, :qlen, :qstart, :qend, :tlen, :tstart, :tend, :matches, :alnlen, :is_rc)
 
-function PAFRecord(size::Int=2)
+function PAFRecord(size::Int=0)
     data = Vector{UInt8}(undef, max(size, 0))
     PAFRecord(data, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0xff, false)
 end
@@ -141,6 +170,14 @@ end
 Return the nucleotide / residue identity, defined as the number of
 matches divided by the alignment length.
 This is a number between 0 and 1.
+
+# Examples
+```jldoctest
+julia> aln_identity(record)
+1.0
+```
+
+See also: [`query_coverage`](@ref), [`target_coverage`](@ref)
 """
 function aln_identity(record::PAFRecord)::Float64
     record.matches / record.alnlen
@@ -152,8 +189,17 @@ end
 Compute the approximate fraction of the query covered by the alignment.
 This is computed as the alignment length divided by the query length,
 and thus may be inaccurate if there are deletions in the alignment.
+The result is guaranteed to be non-negative.
+
+# Examples
+```jldoctest
+julia> query_coverage(record)
+0.9999535124653004
+```
+
+See also: [`target_coverage`](@ref), [`aln_identity`](@ref)
 """
-function query_coverage(record::PAFRecord)::FLoat64
+function query_coverage(record::PAFRecord)::Float64
     (record.qend - record.qstart + Int32(1)) / record.qlen
 end
 
@@ -163,13 +209,43 @@ end
 Compute the approximate fraction of the target covered by the alignment.
 This is computed as the alignment length divided by the target length,
 and thus may be inaccurate if there are deletions in the alignment.
+The result is guaranteed to be non-negative.
+
+# Examples
+```jldoctest
+julia> target_coverage(record)
+0.044934629307437725
+```
+
+See also: [`query_coverage`](@ref), [`aln_identity`](@ref)
 """
-function target_coverage(record::PAFRecord)::FLoat64
+function target_coverage(record::PAFRecord)::Float64
     (record.tend - record.tstart + Int32(1)) / record.tlen
 end
 
 """
-    aux_data(rec::Record) -> SAMAuxData.SAM.Auxiliary
+    aux_data(rec::Record) -> XAMAuxData.SAM.Auxiliary
+
+Return a lazily evaluated and validated `SAM.Auxiliary`, which is an `AbstractDict`
+of the auxiliary fields at the end of the record.
+For more details about this object, read the documentation of the package
+XAMAuxData.jl.
+
+# Examples
+```jldoctest
+julia> aux = aux_data(record);
+
+julia> length(aux)
+4
+
+julia> aux["cm"]
+29990
+
+julia> aux["k1"] = "add a new aux string like this";
+
+julia> haskey(aux, "k1")
+true
+```
 """
 function aux_data(record::PAFRecord)
     Auxiliary(
@@ -178,8 +254,22 @@ function aux_data(record::PAFRecord)
     )
 end
 
-# TODO: Doc
+"""
+    module Errors
+
+Wrapper module used to contain the instances of error types,
+and not pollute the namespace of the package.
+
+# Examples
+```jldoctest
+julia> print(PAF.Errors.InvalidZero)
+InvalidZero
+```
+
+See also: [`ParserException`](@ref)
+"""
 module Errors
+public Err
 # See descriptions in the `showerror` method below.
 @enum Err::Int32 begin
     TooFewFields
@@ -196,18 +286,42 @@ end # module Errors
 
 using .Errors: Err
 
-# TODO: Error doc
+"""
+    ParserException
 
-# TODO: Doc
-struct ParserError
+The exception type thrown by iterating [`PAFReader`](@ref), or a failed `parse` of
+a [`PAFRecord`](@ref). The functions `try_parse` and `try_next!` may return
+(not throw) values of this type.
+The line the error occurred may be accessed with the `.line` field.
+The error kind may be accessed with the `.kind` field.
+
+# Examples
+```jldoctest
+julia> err = PAF.try_parse("abc");
+
+julia> err.line
+1
+
+julia> print(err.kind)
+TooFewFields
+```
+"""
+struct ParserException <: Exception
+    kind::Errors.Err
     index_in_line::Int32
-    kind::Err
+    line::Int
 end
 
-# TODO: Doc
-struct ParserException <: Exception
-    error::ParserError
-    line::Int
+ParserException(index::Integer, kind::Errors.Err) = ParserException(kind, index, 1)
+
+Base.propertynames(x::ParserException) = (:kind, :line)
+
+function Base.getproperty(x::ParserException, s::Symbol)
+    if s ∈ (:kind, :line)
+        getfield(x, s)
+    else
+        throw(ArgumentError(lazy"No such property in ParserException: $s"))
+    end
 end
 
 function Base.showerror(io::IO, err::ParserException)
@@ -215,9 +329,9 @@ function Base.showerror(io::IO, err::ParserException)
     print(buf, "Error when parsing PAF record on line ")
     print(buf, err.line)
     print(buf, ", near byte number ")
-    print(buf, err.error.index_in_line)
+    print(buf, getfield(err, :index_in_line))
     print(buf, " in line: ")
-    kind = err.error.kind
+    kind = err.kind
     s = if kind == Errors.TooFewFields
         "Not enough tab-separated fields. Each line must have at least 12 fields"
     elseif kind == Errors.IntegerOverflow
@@ -246,11 +360,29 @@ end
 macro var"?"(expr)
     quote
         local res = $(esc(expr))
-        res isa ParserError ? (return res) : res
+        res isa ParserException ? (return res) : res
     end
 end
 
-# TODO: Doc
+"""
+    try_parse(x) -> Union{PAFRecord, ParserException}
+
+Try parsing `x` into a `PAFRecord`. `x` may be any type that implements
+`MemView`, such as `String` or `Vector{UInt8}`.
+
+# Examples
+```jldoctest
+julia> valid_line = open(readline, path_to_paf);
+
+julia> typeof(PAF.try_parse(valid_line))
+PAFRecord
+
+julia> typeof(PAF.try_parse("invalid string"))
+PairwiseMappingFormat.ParserException
+```
+
+See also: [`PAFRecord`](@ref), [`try_next!`](@ref)
+"""
 try_parse(x) = try_parse(ImmutableMemView(x))
 # At least 19 bytes of input are stored in the fixed fields, so
 # we need at most 19 fewer bytes in the data field of the vector.
@@ -258,13 +390,13 @@ try_parse(x::ImmutableMemView{UInt8}) = parse_line!(PAFRecord(length(x) - 19), x
 
 function Base.parse(::Type{PAFRecord}, s::Union{String, SubString{String}})
     y = try_parse(s)
-    y isa PAFRecord ? y : throw(ParserException(y, 1))
+    y isa PAFRecord ? y : throw(y)
 end
 
 function parse_line!(
     record::PAFRecord,
     mem::ImmutableMemView{UInt8},
-)::Union{PAFRecord, ParserError}
+)::Union{PAFRecord, ParserException}
     if lastindex(mem) > typemax(Int32)
         error("PairwiseMappingFormat.jl can't handle lines longer than 2147483647 bytes")
     end
@@ -274,30 +406,30 @@ function parse_line!(
     (qlen, i) = @? parse_int(mem, i, false)
     (qstart, i) = @? parse_int(mem, i, true)
     (qend, i) = @? parse_int(mem, i, false)
-    qend ≥ qstart || return ParserError(i % Int32, Errors.BackwardsIndices)
-    qend > qlen && return ParserError(i % Int32, Errors.PositionOutOfBounds)
+    qend ≥ qstart || return ParserException(i % Int32, Errors.BackwardsIndices)
+    qend > qlen && return ParserException(i % Int32, Errors.PositionOutOfBounds)
 
     # Load the strand field.
-    i > lastindex(mem) - 1 && return ParserError(lastindex(mem) % Int32, Errors.TooFewFields)
+    i > lastindex(mem) - 1 && return ParserException(lastindex(mem) % Int32, Errors.TooFewFields)
     b = @inbounds mem[i]
-    b ∈ (UInt8('+'), UInt8('-')) || return ParserError(i % Int32, Errors.InvalidStrand)
+    b ∈ (UInt8('+'), UInt8('-')) || return ParserException(i % Int32, Errors.InvalidStrand)
     @inbounds mem[i + one(i)] == UInt8('\t') ||
-              return ParserError((i + 1) % Int32, Errors.TooFewFields)
+              return ParserException((i + 1) % Int32, Errors.TooFewFields)
 
     # Load rest of the fields
     (tname, i) = @? parse_str(mem, i + 2) # i + 2 because strand plus tab took two bytes
     (tlen, i) = @? parse_int(mem, i, false)
     (tstart, i) = @? parse_int(mem, i, true)
     (tend, i) = @? parse_int(mem, i, false)
-    tend ≥ tstart || return ParserError(i % Int32, Errors.BackwardsIndices)
-    tend > tlen && return ParserError(i % Int32, Errors.PositionOutOfBounds)
+    tend ≥ tstart || return ParserException(i % Int32, Errors.BackwardsIndices)
+    tend > tlen && return ParserException(i % Int32, Errors.PositionOutOfBounds)
     (matches, i) = @? parse_int(mem, i, true)
     (alnlen, i) = @? parse_int(mem, i, false)
     (mapq, i) = @? parse_int(mem, i, true, true)
     
     # A missing mapq is encoded as 255 in the PAF format, we store it as such
     mapq = if mapq > 255
-        return ParserError(i % Int32, Errors.IntegerOverflow)
+        return ParserException(i % Int32, Errors.IntegerOverflow)
     else
         mapq % UInt8
     end
@@ -339,10 +471,10 @@ end
 function parse_str(
     v::ImmutableMemView{UInt8},
     from::Int,
-)::Union{Tuple{UnitRange{Int}, Int}, ParserError}
+)::Union{Tuple{UnitRange{Int}, Int}, ParserException}
     i = findnext(==(UInt8('\t')), v, from)
     if isnothing(i)
-        ParserError(lastindex(v) % Int32, Errors.TooFewFields)
+        ParserException(lastindex(v) % Int32, Errors.TooFewFields)
     else
         (from:i-1, i + 1)
     end
@@ -354,34 +486,73 @@ function parse_int(
     from::Int,
     allow_zero::Bool,
     at_end::Bool=false,
-)::Union{Tuple{Int32, Int}, ParserError}
+)::Union{Tuple{Int32, Int}, ParserException}
     n = Int32(0)
     i = from
     for outer i in from:lastindex(v)
         b = @inbounds v[i]
         # If we hit a tab, this field is over.
         if b == UInt8('\t')
-            i == from && return ParserError(i % Int32, Errors.EmptyInteger)
-            (!allow_zero & iszero(n)) && return ParserError(i % Int32, Errors.InvalidZero)
+            i == from && return ParserException(i % Int32, Errors.EmptyInteger)
+            (!allow_zero & iszero(n)) && return ParserException(i % Int32, Errors.InvalidZero)
             return (n, i + 1)
         end
-        b ∈ 0x30:0x39 || return ParserError(i % Int32, Errors.BadInteger)
-        n < 0 && return ParserError(i % Int32, Errors.IntegerOverflow)
+        b ∈ 0x30:0x39 || return ParserException(i % Int32, Errors.BadInteger)
+        n < 0 && return ParserException(i % Int32, Errors.IntegerOverflow)
         n = Int32(10) * n + (b - Int32(48))
     end
     # at_end is if this is the mapq field, which does not need to end with a tab
     if !at_end
-        ParserError(lastindex(v) % Int32, Errors.TooFewFields)
+        ParserException(lastindex(v) % Int32, Errors.TooFewFields)
     elseif from > lastindex(v)
-        ParserError(i % Int32, Errors.EmptyInteger)
+        ParserException(i % Int32, Errors.EmptyInteger)
     elseif !allow_zero & iszero(n)
-        ParserError(i % Int32, Errors.InvalidZero)
+        ParserException(i % Int32, Errors.InvalidZero)
     else
         (n, i + 1)
     end
 end
 
-# TODO: Doc
+"""
+    PAFReader(io::IO; copy::Bool=true)
+
+Construct a `PAFReader`, an iterator of [`PAFRecord`](@ref) read from `io`.
+Iterating this object returns a `PAFRecord` for each valid line of input,
+and throws a [`ParserException`](@ref) when an invalid record is found.
+For efficiency, the auxiliary fields are not validated until they are accessed.
+
+If `copy` is false, the *same* record will be returned on each iteration,
+with its content being overwritten. This removes a few allocations per iteration,
+but may cause problems if records of old iterations are stored.
+
+# Examples
+```jldoctest
+julia> reader = PAFReader(open(path_to_paf)); typeof(reader)
+PAFReader{IOStream}
+
+julia> typeof(first(reader))
+PAFRecord
+
+julia> PAFReader(open(path_to_paf)) do reader
+           for record in reader
+                println(record.qlen)
+           end
+       end
+301156
+299273
+288659
+
+julia> PAFReader(open(path_to_paf); copy=false) do reader
+           fst = first(reader)
+           all(reader) do record
+               record === fst
+           end
+       end
+true
+```
+
+See also: [`PAFRecord`](@ref), [`try_next!`](@ref)
+"""
 mutable struct PAFReader{I <: IO}
     const io::I
     const record::PAFRecord
@@ -436,7 +607,7 @@ end
 
 function Base.iterate(reader::PAFReader, ::Nothing=nothing)
     res = try_next!(reader)
-    if res isa ParserError
+    if res isa ParserException
         throw(ParserException(res, reader.line))
     elseif res === nothing
         nothing
@@ -522,8 +693,41 @@ function read_buffer!(reader::PAFReader)::Int
     end
 end
 
-# TODO: Doc
-function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserError}
+"""
+    try_next!(reader::PAFReader) -> Union{Nothing, PAFRecord, ParserException}
+
+Try to read a record from the [`PAFReader`](@ref) and advance the reader. This may yield one of three options:
+* If the reader is empty, return `nothing` and do not advance the reader
+* If the next record is invalid, return (do not throw) a `ParserException` and
+  do not advance the reader
+* If the next record is valid, return it as a [`PAFRecord`](@ref) and advance the reader
+
+Even if the reader itself is not advanced, it may still fill its internal buffer, advancing
+the `IO` object it wraps.
+
+# Examples
+```jldoctest
+julia> reader = PAFReader(open(path_to_paf));
+
+julia> try_next!(reader) isa PAFRecord
+true
+
+julia> [try_next!(reader) for i in 1:2] isa Vector{PAFRecord}
+true
+
+julia> typeof([try_next!(reader) for i in 1:100])
+Vector{Nothing} (alias for Array{Nothing, 1})
+
+julia> close(reader); reader = PAFReader(IOBuffer("bad data"));
+
+julia> try_next!(reader) isa PAF.ParserException
+true
+
+julia> all(i -> try_next!(reader) isa PAF.ParserException, 1:100)
+true
+```
+"""
+function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
     # n_scanned: The number of bytes in buffer we have already memchrd searching for a newline
     n_scanned = 0
     newline = findfirst(
@@ -563,16 +767,42 @@ function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserError}
     parse_mem = ImmutableMemView(mem)[reader.index:last_index]
     # If there is no memory to parse (and we have already verified that
     # there are no more bytes in the IO), we end
-    isempty(parse_mem) && return nothing
+    if isempty(parse_mem)
+        line = reader.line
+        col = 0
+        @inbounds for b in ImmutableMemView(mem)[reader.index:reader.filled]
+            col += 1
+            line += b == UInt8('\n')
+            col *= b != UInt8('\n')
+            if b ∉ (UInt8('\r'), UInt8('\n'), UInt8('\t'), UInt8(' '))
+                return ParserException(Errors.EmptyNonTailingLine, col % Int32, line)
+            end
+        end
+        return nothing
+    end
     # If this results in an error, we return the error.
-    parse_result = @? parse_line!(reader.record, parse_mem)
+    res = parse_line!(reader.record, parse_mem)
+    res isa ParserException && return ParserException(res.kind, getfield(res, :index_in_line), reader.line)
     # Else, we update the reader. This means `next!` will continuously return
     # an error if an error is found.
     # If the newline was found, we compensate for the newline by skipping that byte in
     # the next iteration, hence the extra `newline !== nothing`.
     reader.index = last_index + 1 + has_windows_newline + (newline !== nothing)
     reader.line += 1
-    return parse_result
+    return res
+end
+
+@setup_workload begin
+    path = joinpath(pkgdir(PairwiseMappingFormat), "test", "example.paf")
+    @compile_workload begin
+        record = PAFReader(open(path)) do reader
+            (rec, _) = iterate(reader)
+            _ = try_next!(reader)
+        end
+        line = first(eachline(path))
+        rec = parse(PAFRecord, line)
+        ncodeunits(rec.qname) + copy(rec).qlen + rec.mapq + ncodeunits(rec.tname)
+    end
 end
 
 end # module PairwiseMappingFormat

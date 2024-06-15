@@ -26,3 +26,5 @@ Manifest.toml
 .DS_Store
 
 TODO.md
+
+*.code-workspace

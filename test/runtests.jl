@@ -5,8 +5,9 @@ using PairwiseMappingFormat: Errors, try_parse
 using Test
 using FormatSpecimens
 using MemViews
+using Aqua
 
-using SAMAuxData.SAM: AuxTag
+using XAMAuxData.SAM: AuxTag
 
 function cmp_aux(record::PAFRecord, other)
     aux = sort!(collect(aux_data(record)); by=first)
@@ -51,7 +52,11 @@ end
 end
 
 @testset "Edge case records" begin
-    (rec1, rec2, rec3) = PAFReader(collect, open(joinpath(path_of_format("PAF"), "good2.paf")))
+    (rec1, rec2, rec3) = PAFReader(open(joinpath(path_of_format("PAF"), "good2.paf"))) do reader
+        y = first(reader, 3)
+        @test isempty(reader)
+        y
+    end
     @test rec1.qname == "中国科学院大学"
     @test rec1.qlen == typemax(Int32)
     cmp_aux(rec1, ["tp" => 'S', "cm" => 29990, "s1" => 301142, "dv" => -13.2442f-18, "rl" => 0, "xX" => [0xea, 0x19, 0xfe, 0x1b], "K1" => Int8[15, 9, 22, 127, -12, -128, 0]])
@@ -63,7 +68,7 @@ function with_replaced(s::String, field::Integer, new::String)
     fields = split(s, '\t')
     fields[field] = new
     y = try_parse(join(fields, "\t"))
-    y isa PairwiseMappingFormat.ParserError ? y.kind : y
+    y isa PairwiseMappingFormat.ParserException ? y.kind : y
 end
 
 @testset "Errors" begin
@@ -101,7 +106,7 @@ end
     for i in 0:11
         s = join(split(good, '\t')[1:i], '\t')
         y = try_parse(s)
-        @test y isa PairwiseMappingFormat.ParserError && y.kind == Errors.TooFewFields
+        @test y isa PairwiseMappingFormat.ParserException && y.kind == Errors.TooFewFields
     end
 
     # Missing field
@@ -142,6 +147,19 @@ end
     (rec1, rec2) = collect(reader)
 
     @test aux_data(rec1)["an"] == " dljdl "
+
+    data *= "\n\n"
+    @test !isempty(PAFReader(collect, IOBuffer(data)))
+
+    data *= "\nV\n"
+    PAFReader(IOBuffer(data)) do reader
+        @test first(reader, 2) isa Vector{PAFRecord}
+        @test try_next!(reader).kind == Errors.EmptyNonTailingLine
+    end
+end
+
+@testset "Aqua" begin
+    Aqua.test_all(PairwiseMappingFormat; ambiguities=false)
 end
 
 end # module
