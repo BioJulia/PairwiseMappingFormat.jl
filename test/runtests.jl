@@ -62,6 +62,21 @@ end
     cmp_aux(rec1, ["tp" => 'S', "cm" => 29990, "s1" => 301142, "dv" => -13.2442f-18, "rl" => 0, "xX" => [0xea, 0x19, 0xfe, 0x1b], "K1" => Int8[15, 9, 22, 127, -12, -128, 0]])
     cmp_aux(rec2, ["dv" => 1.243f-4, "rl" => 38, "kk" => "!=[]! And then~~  "])
     cmp_aux(rec3, ["dv" => +17f21, "rl" => 38])
+
+    # Empty record
+    rec = PAFReader(only, open(joinpath(path_of_format("PAF"), "good3.paf")))
+    @test isnothing(rec.tname)
+    @test isnothing(rec.is_rc)
+    @test !is_mapped(rec)
+    @test rec.qname == "query"
+    @test rec.qlen == 56
+    @test Dict(aux_data(rec)) == Dict{AuxTag, Any}(
+        "tp" => 'S',
+        "cm" => 4,
+        "s1" => 49,
+        "dv" => Float32(0.0117),
+        "rl" => 0,
+    )
 end
 
 function with_replaced(s::String, field::Integer, new::String)

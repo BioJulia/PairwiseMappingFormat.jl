@@ -11,7 +11,8 @@ export PAFReader,
     aux_data,
     try_next!,
     query_coverage,
-    target_coverage
+    target_coverage,
+    is_mapped
 
 # Not exported, because this very PAF-specific, and operates on foreign types.
 public try_parse, ParserException, Errors, Err
@@ -52,9 +53,10 @@ See also: [`PAFReader`](@ref)
 
 # Extended help
 The following properties may be used:
-* `qname` and `tname::StringView`s, and give the name
-  if the query and target. These may be empty or contain any
-  bytes except a `\t` and `\n`.
+* `qname::StringView`. The query name, May be empty, and contain any bytes
+  except `\t` and `\n`.
+* `tname::Union{StringView, Nothing}`. Target name. Like `qname`, but is `nothing`
+  if and only if the record is unmapped.
 * `qlen` and `tlen::Int`, and gives the length of the query and target
   sequences, respectively. This must be > 0.
 * `qstart`, `qend`, `tstart` and `tend::Int`, and give the starting and
@@ -68,8 +70,8 @@ The following properties may be used:
 * `alnlen::Int` gives the length of the alignment
 * `mapq::Union{Int, Nothing}` gives the mapping quality, or `nothing` if 
   this information is unavailable.
-* `is_rc::Bool` tells if the query and target strands are reverse-complement
-  relative to each other.
+* `is_rc::Union{Bool,Nothing}` tells if the query and target strands are reverse-complement
+  relative to each other. Is `nothing` if the record is unmapped.
 """
 mutable struct PAFRecord
     # Data contains query name, subject name, AUX data,
@@ -80,15 +82,15 @@ mutable struct PAFRecord
     qlen::Int32 # always >= 1
     # Note: qstart/qend (and tstart/tend) are zero-indexed semi-open interval
     # in PAF format, but stored in this struct one-based.
-    qstart::Int32 # always >= 1
+    qstart::Int32 # always >= 1, except when unmapped
     qend::Int32 # always >= qstart
-    tlen::Int32 # always >= 1
-    tstart::Int32 # always >= 1
+    tlen::Int32 # always >= 1, except when unmapped
+    tstart::Int32 # always >= 1, except when unmapped
     tend::Int32 # always >= tstart
     matches::Int32
-    alnlen::Int32 # always >= 1
+    alnlen::Int32 # always >= 1, except when unmapped
     mapq::UInt8 # stored as 0xff for missing
-    is_rc::Bool
+    strand::UInt8 # 0x00: *, 0x01: -, 0x02: +
     # 16 bits of padding, which we can use for something else later
 end
 
@@ -104,10 +106,35 @@ function Base.getproperty(record::PAFRecord, sym::Symbol)
     elseif sym in (:qlen, :qstart, :qend, :tlen, :tstart, :tend, :matches, :alnlen)
         Int(getfield(record, sym))
     elseif sym == :is_rc
-        getfield(record, :is_rc)
+        is_rc(record)
     else
         error(lazy"Type PAFRecord has no property $sym")
     end
+end
+
+"""
+    is_mapped(x::PAFRecord) -> Bool
+
+Compute whether the `PAFRecord` is mapped. An unmapped record will have
+the properties `is_rc` and `tname` unavailable.
+The properties `qname` and `qlen`, and the auxiliary data of an unmapped record
+can be relied on, but the remaining properties contain arbitrary data.
+Note that some PAF parsers do not handle unmapped records correctly, so be
+wary when writing unmapped records.
+
+# Examples
+```jldoctes
+julia> is_mapped(record)
+true
+```
+
+See also: [`PAFRecord`](@ref)
+"""
+is_mapped(x::PAFRecord) = !iszero(getfield(x, :strand))
+
+function is_rc(record::PAFRecord)::Union{Bool, Nothing}
+    x = getfield(record, :strand)
+    iszero(x) ? nothing : x == 0x02
 end
 
 # For tab completion
@@ -115,20 +142,23 @@ Base.propertynames(::PAFRecord) = (:qname, :tname, :mapq, :qlen, :qstart, :qend,
 
 function PAFRecord(size::Int=0)
     data = Vector{UInt8}(undef, max(size, 0))
-    PAFRecord(data, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0xff, false)
+    PAFRecord(data, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0xff, 0x00)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", record::PAFRecord)
     buf = IOBuffer()
+    is_mapped(record) || print(buf, "Unmapped ")
     println(buf, "PAFRecord:")
     println(buf, "  Query:    ", qname(record))
-    println(buf, "  Target:   ", tname(record))
-    println(buf, "  Q cov:    ", round(query_coverage(record); digits=4))
-    println(buf, "  T cov:    ", round(target_coverage(record); digits=4))
-    println(buf, "  Identity: ", round(aln_identity(record); digits=4))
-    qual = mapq(record)
-    qual = qual === nothing ? "255 (missing)" : string(qual)
-    println(buf, "  Quality:  ", qual)
+    if is_mapped(record)
+        println(buf, "  Target:   ", tname(record))
+        println(buf, "  Q cov:    ", round(query_coverage(record); digits=4))
+        println(buf, "  T cov:    ", round(target_coverage(record); digits=4))
+        println(buf, "  Identity: ", round(aln_identity(record); digits=4))
+        qual = mapq(record)
+        qual = qual === nothing ? "255 (missing)" : string(qual)
+        println(buf, "  Quality:  ", qual)
+    end
     print(buf, "  Aux data: ")
     write(buf, repr_aux(record))
     print(io, String(take!(buf)))
@@ -152,10 +182,14 @@ function qname(record::PAFRecord)
 end
 
 # Return StringView to not allocate
-function tname(record::PAFRecord)
-    ql = getfield(record, :qname_len)
-    span = (ql+ 1):(ql + getfield(record, :tname_len))
-    StringView(ImmutableMemView(getfield(record, :data))[span])
+function tname(record::PAFRecord)::Union{StringView, Nothing}
+    if is_mapped(record)
+        ql = getfield(record, :qname_len)
+        span = (ql+ 1):(ql + getfield(record, :tname_len))
+        StringView(ImmutableMemView(getfield(record, :data))[span])
+    else
+        nothing
+    end
 end
 
 # Note: We return nothing instead of missing because fuck missing
@@ -409,11 +443,20 @@ function parse_line!(
     qend ≥ qstart || return ParserException(i % Int32, Errors.BackwardsIndices)
     qend > qlen && return ParserException(i % Int32, Errors.PositionOutOfBounds)
 
-    # Load the strand field.
-    i > lastindex(mem) - 1 && return ParserException(lastindex(mem) % Int32, Errors.TooFewFields)
+    # Load the strand field. We need at least 14 more bytes to encode 7 more mandatory fields
+    # plus 7 more tabs.
+    i + 14 > lastindex(mem) && return ParserException(lastindex(mem) % Int32, Errors.TooFewFields)
     b = @inbounds mem[i]
-    b ∈ (UInt8('+'), UInt8('-')) || return ParserException(i % Int32, Errors.InvalidStrand)
-    @inbounds mem[i + one(i)] == UInt8('\t') ||
+    strand = if b == UInt8('*')
+        return finish_unmapped!(record, mem, qname, qlen, i + 2)
+    elseif b == UInt8('-')
+        0x01
+    elseif b == UInt8('+')
+        0x02
+    else
+        return ParserException(i % Int32, Errors.InvalidStrand)
+    end
+    @inbounds mem[i + 1] == UInt8('\t') ||
               return ParserException((i + 1) % Int32, Errors.TooFewFields)
 
     # Load rest of the fields
@@ -462,9 +505,59 @@ function parse_line!(
     record.matches = matches
     record.alnlen = alnlen
     record.mapq = mapq
-    record.is_rc = b == UInt8('-')
+    record.strand = strand
 
     record
+end
+
+# If the record is unmapped we don't even bother reading
+# the rest of the fields, so take this fast path
+# i is the byte index of the strand plus two
+function finish_unmapped!(
+    record::PAFRecord,
+    mem::ImmutableMemView{UInt8},
+    qname::UnitRange{Int},
+    qlen::Int32,
+    i::Int
+)
+    # Determine the position of aux data
+    for _ in 1:6
+        i = findnext(==(UInt8('\t')), mem, i)
+        i = if isnothing(i)
+            return ParserException(lastindex(mem) % Int32, Errors.TooFewFields)
+        else
+            i + 1
+        end
+    end
+    i = findnext(==(0x00), mem, i)
+    aux_end = lastindex(mem)
+    aux_start = isnothing(i) ? aux_end + 1 : i + 1
+    aux = aux_start:aux_end
+
+    # Copy data
+    filled = length(qname) + length(aux)
+    data = getfield(record, :data)
+    dataview = MemView(data)
+    length(data) == filled || resize!(data, filled)
+    unsafe_copyto!(dataview, 1, mem, first(qname), length(qname))
+    unsafe_copyto!(dataview, length(qname) + 1, mem, aux_start, length(aux))
+
+    # Fill in fields
+    record.qname_len = length(qname) % Int32
+    record.tname_len = 0
+    record.qlen = qlen
+    record.qstart = 0
+    record.qend = 0
+    record.tlen = 0
+    record.tstart = 0
+    record.tend = 0
+    record.matches = 0
+    record.alnlen = 0
+    record.mapq = 0xff
+    record.strand = 0x00
+
+    record
+
 end
 
 # Just get the index of the next \t
@@ -601,14 +694,14 @@ function Base.copy(record::PAFRecord)
         getfield(record, :matches),
         getfield(record, :alnlen),
         getfield(record, :mapq),
-        getfield(record, :is_rc),
+        getfield(record, :strand),
     )
 end
 
 function Base.iterate(reader::PAFReader, ::Nothing=nothing)
     res = try_next!(reader)
     if res isa ParserException
-        throw(ParserException(res, reader.line))
+        throw(res)
     elseif res === nothing
         nothing
     else
