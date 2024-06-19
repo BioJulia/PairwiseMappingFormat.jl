@@ -132,6 +132,41 @@ record = parse(PAFRecord, data)
 
 ```
 
+Rarely, PAF records are unmapped. An unmapped record contain the query id, the query length, and any [auxiliary fields](@ref aux).
+The target name and the strand of an unmapped return is `nothing`.
+You can check if a record is mapped or unmapped with the function `is_mapped`:
+
+```jldoctest unmapped
+unmapped = parse(PAFRecord, "myquery\t5032251\t9\t11\t*\t*\t5\t2\t1\t7\t4\t0")
+@assert !is_mapped(unmapped)
+println(unmapped.qname)
+println(unmapped.qlen)
+@assert isnothing(unmapped.tname)
+# The strand is given by is_rc, and is nothing for unmapped records
+@assert isnothing(unmapped.is_rc)
+
+# output
+myquery
+5032251
+```
+
+All other properties of unmapped records may contain arbitrary data, and should not be relied on.
+For this reason, the functions [`target_coverage`](@ref), [`query_coverage`](@ref) and [`aln_identity`](@ref)
+may give nonsense answers for unmapped records:
+```jldoctest unmapped
+# Note! These results are arbitrary and not guaranteed to be stable
+# across minor releases of this package
+println(target_coverage(unmapped))
+println(query_coverage(unmapped))
+println(aln_identity(unmapped))
+
+# output
+Inf
+1.9871822768776836e-7
+NaN
+
+```
+
 ## Low-level interface
 Iterating `PAFReader`s, and the `parse` function will throw a `PairwiseMappingFormat.ParserException` if the data is invalid:
 ```jldoctest
@@ -211,7 +246,7 @@ The precise value of this `.kind` object for any given error condition is subjec
 to change across minor versions and new values may be introduced.
 This is because the same error may be detected in multiple different ways.
 
-## Auxiliary fields
+## [Auxiliary fields](@id aux)
 [`PAFRecord`](@ref)s may contain extra auxiliary fields at the end of the records,
 similar to SAM records.
 Any auxiliary data is stored in the `PAFRecord`, and lazily parsed and validated
@@ -269,6 +304,7 @@ aln_identity
 query_coverage
 target_coverage
 try_next!
+is_mapped
 PairwiseMappingFormat.try_parse
 PairwiseMappingFormat.ParserException
 ```
