@@ -170,9 +170,7 @@ NaN
 ## Low-level interface
 Iterating `PAFReader`s, and the `parse` function will throw a `PairwiseMappingFormat.ParserException` if the data is invalid:
 ```jldoctest
-parse(PAFRecord, "not a PAF line")
-
-# output
+julia> parse(PAFRecord, "not a PAF line")
 ERROR: Error when parsing PAF record on line 1, near byte number 14 in line: Not enough tab-separated fields. Each line must have at least 12 fields
 [...]
 ```
@@ -186,13 +184,10 @@ It either returns a valid `PAFRecord`, or else returns the [`ParserException`](@
 but does not throw the exception:
 
 ```jldoctest public
-const PAF = PairwiseMappingFormat
+julia> const PAF = PairwiseMappingFormat;
 
-println(PAF.try_parse("not a PAF line"))
-
-# output
+julia> println(PAF.try_parse("not a PAF line"))
 PairwiseMappingFormat.ParserException(PairwiseMappingFormat.Errors.TooFewFields, 14, 1)
-
 ```
 
 Similarly, the next record of a `PAFReader` may be obtained with the unexported [`try_next!`](@ref)
@@ -234,11 +229,10 @@ The [`ParserException`](@ref) type contains the error type as an `Enum`, and the
 the exception occurred. These can be obtained with the `.kind` and `.line` properties.
 
 ```jldoctest public
-println(err.line)
-println(err.kind)
-
-# output
+julia> err.line
 1
+
+julia> err.kind
 TooFewFields
 ```
 

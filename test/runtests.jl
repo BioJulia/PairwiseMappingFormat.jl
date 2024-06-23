@@ -42,6 +42,12 @@ end
 		@test rec1.matches == 301142
 		@test rec1.alnlen == 301142
 		@test rec1.mapq == 0
+
+		@test_throws Exception rec1.foobar
+		@test_throws Exception rec1.strand
+		@test_throws Exception rec1.data
+		@test_throws Exception rec1.qname_len
+		@test_throws Exception rec1.tname_len
 	end
 
 	@testset "Aux data" begin
@@ -64,7 +70,7 @@ end
     cmp_aux(rec3, ["dv" => +17f21, "rl" => 38])
 
     # Empty record
-    rec = PAFReader(only, open(joinpath(path_of_format("PAF"), "good3.paf")))
+    rec = PAFReader(first, open(joinpath(path_of_format("PAF"), "good3.paf")))
     @test isnothing(rec.tname)
     @test isnothing(rec.is_rc)
     @test !is_mapped(rec)
@@ -77,6 +83,9 @@ end
         "dv" => Float32(0.0117),
         "rl" => 0,
     )
+
+    # Unmapped record with too few fieds
+    @test try_parse("query\t123\t1\t100\t*\t*\t5\t19").kind == Errors.TooFewFields
 end
 
 function with_replaced(s::String, field::Integer, new::String)
@@ -87,7 +96,7 @@ function with_replaced(s::String, field::Integer, new::String)
 end
 
 @testset "Errors" begin
-    good = "my_qname	301156	3	301145	+	my_tname	6701780	2764860	3066002	301142	301142	0"
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
     @test with_replaced(good, 1, "my other name") isa PAFRecord
     
     # Negative numbers, zero numbers
@@ -113,7 +122,7 @@ end
     @test with_replaced(good, 4, "310000") == Errors.PositionOutOfBounds
     @test with_replaced(good, 7, "3060002") == Errors.PositionOutOfBounds
     @test with_replaced(good, 9, "6711780") == Errors.PositionOutOfBounds
-     
+
     # Char not valid
     @test with_replaced(good, 5, "/") == Errors.InvalidStrand
     
@@ -131,6 +140,31 @@ end
     
     # Mapq too high
     @test with_replaced(good, 12, "256") == Errors.IntegerOverflow
+end
+
+@testset "Bad reader" begin
+    # Iterating a reader with bad data will throw
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+
+    @test only(PAFReader(collect, IOBuffer(good))) isa PAFRecord
+    bad = good[1:end-2]
+    @test_throws PairwiseMappingFormat.ParserException only(PAFReader(collect, IOBuffer(bad)))
+end
+
+@testset "Reader buffer size" begin
+    # Large data where buffer needs to be shifted
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    large = join([good for _ in 1:1000], '\n')
+    PAFReader(IOBuffer(large); buf_size=16) do reader
+        (allgood, n) = foldl(reader; init=(true, 0)) do (isgood, n), record
+            isgood &= record.qlen == 301156
+            isgood &= record.mapq == 0
+            isgood &= record.tstart == 2764861
+            (isgood, n + 1)
+        end
+        @test n == 1000
+        @test allgood
+    end
 end
 
 # We assume that aux data is correctly tested in its own package, here we just test

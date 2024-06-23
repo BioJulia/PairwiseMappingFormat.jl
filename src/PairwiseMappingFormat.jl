@@ -149,9 +149,9 @@ function Base.show(io::IO, ::MIME"text/plain", record::PAFRecord)
     buf = IOBuffer()
     is_mapped(record) || print(buf, "Unmapped ")
     println(buf, "PAFRecord:")
-    println(buf, "  Query:    ", qname(record))
+    println(buf, "  Query:    \"", qname(record), '"')
     if is_mapped(record)
-        println(buf, "  Target:   ", tname(record))
+        println(buf, "  Target:   \"", tname(record), '"')
         println(buf, "  Q cov:    ", round(query_coverage(record); digits=4))
         println(buf, "  T cov:    ", round(target_coverage(record); digits=4))
         println(buf, "  Identity: ", round(aln_identity(record); digits=4))
@@ -165,7 +165,7 @@ function Base.show(io::IO, ::MIME"text/plain", record::PAFRecord)
 end
 
 # Print the AUX fields indented
-function repr_aux(record::PAFRecord)
+function repr_aux(record::PAFRecord)::Vector{UInt8}
     buf = IOBuffer()
     out = IOBuffer()
     show(buf, MIME"text/plain"(), aux_data(record))
@@ -220,10 +220,7 @@ end
 """
     query_coverage(rec::Record) -> Float64
 
-Compute the approximate fraction of the query covered by the alignment.
-This is computed as the alignment length divided by the query length,
-and thus may be inaccurate if there are deletions in the alignment.
-The result is guaranteed to be non-negative.
+Compute the fraction of the query covered by the alignment.
 
 # Examples
 ```jldoctest
@@ -240,10 +237,7 @@ end
 """
     target_coverage(rec::Record) -> Float64
 
-Compute the approximate fraction of the target covered by the alignment.
-This is computed as the alignment length divided by the target length,
-and thus may be inaccurate if there are deletions in the alignment.
-The result is guaranteed to be non-negative.
+Compute the fraction of the target covered by the alignment.
 
 # Examples
 ```jldoctest
@@ -450,9 +444,9 @@ function parse_line!(
     strand = if b == UInt8('*')
         return finish_unmapped!(record, mem, qname, qlen, i + 2)
     elseif b == UInt8('-')
-        0x01
-    elseif b == UInt8('+')
         0x02
+    elseif b == UInt8('+')
+        0x01
     else
         return ParserException(i % Int32, Errors.InvalidStrand)
     end
@@ -484,11 +478,11 @@ function parse_line!(
     length(data) == filled || resize!(data, filled)
     doff = 1
     dataview = MemView(data)
-    unsafe_copyto!(dataview, doff, mem, first(qname), length(qname))
+    unsafe_copyto!(dataview, mem[qname])
     doff += length(qname)
-    unsafe_copyto!(dataview, doff, mem, first(tname), length(tname))
+    unsafe_copyto!(dataview[doff:end], mem[tname])
     doff += length(tname)
-    iszero(auxlen) || unsafe_copyto!(dataview, doff, mem, i, auxlen)
+    iszero(auxlen) || unsafe_copyto!(dataview[doff:end], mem[i:end])
     
 
     # Fill in fields of the struct
@@ -529,7 +523,7 @@ function finish_unmapped!(
             i + 1
         end
     end
-    i = findnext(==(0x00), mem, i)
+    i = findnext(==(UInt8('\t')), mem, i)
     aux_end = lastindex(mem)
     aux_start = isnothing(i) ? aux_end + 1 : i + 1
     aux = aux_start:aux_end
@@ -539,8 +533,8 @@ function finish_unmapped!(
     data = getfield(record, :data)
     dataview = MemView(data)
     length(data) == filled || resize!(data, filled)
-    unsafe_copyto!(dataview, 1, mem, first(qname), length(qname))
-    unsafe_copyto!(dataview, length(qname) + 1, mem, aux_start, length(aux))
+    unsafe_copyto!(dataview, mem[qname])
+    unsafe_copyto!(dataview[length(qname)+1:end], mem[aux])
 
     # Fill in fields
     record.qname_len = length(qname) % Int32
@@ -594,13 +588,15 @@ function parse_int(
         n < 0 && return ParserException(i % Int32, Errors.IntegerOverflow)
         n = Int32(10) * n + (b - Int32(48))
     end
+    # Note: It is not possible to get an InvalidZero error here, because
+    # the last field (mapq) does allow zero, and for any other fields,
+    # if they do not end with a \t and thus reach this line, a TooFewFields
+    # error will be returned.
     # at_end is if this is the mapq field, which does not need to end with a tab
     if !at_end
         ParserException(lastindex(v) % Int32, Errors.TooFewFields)
     elseif from > lastindex(v)
         ParserException(i % Int32, Errors.EmptyInteger)
-    elseif !allow_zero & iszero(n)
-        ParserException(i % Int32, Errors.InvalidZero)
     else
         (n, i + 1)
     end
@@ -660,9 +656,8 @@ mutable struct PAFReader{I <: IO}
     copy::Bool
 end
 
-function PAFReader(io::IO; copy::Bool=true)
-    # 2^16 and 512 are reasonable buffer sizes, they are arbitrary
-    mem = Memory{UInt8}(undef, 2^16)
+function PAFReader(io::IO; buf_size::Int=2^16, copy::Bool=true)
+    mem = Memory{UInt8}(undef, max(buf_size, 16))
     rec = PAFRecord(512)
     PAFReader{typeof(io)}(io, rec, mem, 1, 0, 1, copy)
 end
@@ -671,8 +666,8 @@ Base.IteratorSize(::Type{<:PAFReader}) = Base.SizeUnknown()
 Base.eltype(::Type{<:PAFReader}) = PAFRecord
 Base.close(reader::PAFReader) = close(reader.io) # TODO: Docstring
 
-function PAFReader(f::Function, io::IO; copy::Bool=true)
-    reader = PAFReader(io; copy)
+function PAFReader(f::Function, io::IO; kwargs...)
+    reader = PAFReader(io; kwargs...)
     try
         f(reader)
     finally
