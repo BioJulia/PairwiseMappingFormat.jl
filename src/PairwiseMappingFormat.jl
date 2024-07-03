@@ -28,7 +28,7 @@ using PrecompileTools: @compile_workload, @setup_workload, @recompile_invalidati
     using StringViews: StringView
 end
 
-using MemViews: MemView, ImmutableMemView
+using MemoryViews: MemoryView, ImmutableMemoryView
 
 using XAMAuxData.SAM: Auxiliary
 
@@ -178,7 +178,7 @@ end
 
 # Return StringView to not allocate
 function qname(record::PAFRecord)
-    StringView(ImmutableMemView(getfield(record, :data))[1:(getfield(record, :qname_len))])
+    StringView(ImmutableMemoryView(getfield(record, :data))[1:(getfield(record, :qname_len))])
 end
 
 # Return StringView to not allocate
@@ -186,7 +186,7 @@ function tname(record::PAFRecord)::Union{StringView, Nothing}
     if is_mapped(record)
         ql = getfield(record, :qname_len)
         span = (ql+ 1):(ql + getfield(record, :tname_len))
-        StringView(ImmutableMemView(getfield(record, :data))[span])
+        StringView(ImmutableMemoryView(getfield(record, :data))[span])
     else
         nothing
     end
@@ -396,7 +396,7 @@ end
     try_parse(x) -> Union{PAFRecord, ParserException}
 
 Try parsing `x` into a `PAFRecord`. `x` may be any type that implements
-`MemView`, such as `String` or `Vector{UInt8}`.
+`MemoryView`, such as `String` or `Vector{UInt8}`.
 
 # Examples
 ```jldoctest
@@ -411,10 +411,10 @@ PairwiseMappingFormat.ParserException
 
 See also: [`PAFRecord`](@ref), [`try_next!`](@ref)
 """
-try_parse(x) = try_parse(ImmutableMemView(x))
+try_parse(x) = try_parse(ImmutableMemoryView(x))
 # At least 19 bytes of input are stored in the fixed fields, so
 # we need at most 19 fewer bytes in the data field of the vector.
-try_parse(x::ImmutableMemView{UInt8}) = parse_line!(PAFRecord(length(x) - 19), x)
+try_parse(x::ImmutableMemoryView{UInt8}) = parse_line!(PAFRecord(length(x) - 19), x)
 
 function Base.parse(::Type{PAFRecord}, s::Union{String, SubString{String}})
     y = try_parse(s)
@@ -423,7 +423,7 @@ end
 
 function parse_line!(
     record::PAFRecord,
-    mem::ImmutableMemView{UInt8},
+    mem::ImmutableMemoryView{UInt8},
 )::Union{PAFRecord, ParserException}
     if lastindex(mem) > typemax(Int32)
         error("PairwiseMappingFormat.jl can't handle lines longer than 2147483647 bytes")
@@ -477,7 +477,7 @@ function parse_line!(
     data = getfield(record, :data)
     length(data) == filled || resize!(data, filled)
     doff = 1
-    dataview = MemView(data)
+    dataview = MemoryView(data)
     unsafe_copyto!(dataview, mem[qname])
     doff += length(qname)
     unsafe_copyto!(dataview[doff:end], mem[tname])
@@ -509,7 +509,7 @@ end
 # i is the byte index of the strand plus two
 function finish_unmapped!(
     record::PAFRecord,
-    mem::ImmutableMemView{UInt8},
+    mem::ImmutableMemoryView{UInt8},
     qname::UnitRange{Int},
     qlen::Int32,
     i::Int
@@ -531,7 +531,7 @@ function finish_unmapped!(
     # Copy data
     filled = length(qname) + length(aux)
     data = getfield(record, :data)
-    dataview = MemView(data)
+    dataview = MemoryView(data)
     length(data) == filled || resize!(data, filled)
     unsafe_copyto!(dataview, mem[qname])
     unsafe_copyto!(dataview[length(qname)+1:end], mem[aux])
@@ -556,7 +556,7 @@ end
 
 # Just get the index of the next \t
 function parse_str(
-    v::ImmutableMemView{UInt8},
+    v::ImmutableMemoryView{UInt8},
     from::Int,
 )::Union{Tuple{UnitRange{Int}, Int}, ParserException}
     i = findnext(==(UInt8('\t')), v, from)
@@ -569,7 +569,7 @@ end
 
 # TODO: 40% of runtime is spent in this function. Microoptimize it
 function parse_int(
-    v::ImmutableMemView{UInt8},
+    v::ImmutableMemoryView{UInt8},
     from::Int,
     allow_zero::Bool,
     at_end::Bool=false,
@@ -820,7 +820,7 @@ function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException
     n_scanned = 0
     newline = findfirst(
         ==(0x0a),
-        ImmutableMemView(reader.mem)[(reader.index + n_scanned):(reader.filled % Int)],
+        ImmutableMemoryView(reader.mem)[(reader.index + n_scanned):(reader.filled % Int)],
     )
     n_bytes_read = 0
     # Keep reading until we find a newline or reach EOF
@@ -832,7 +832,7 @@ function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException
         iszero(n_bytes_read) && break
         newline = findfirst(
             ==(0x0a),
-            ImmutableMemView(reader.mem)[(reader.index + n_scanned):(reader.filled % Int)],
+            ImmutableMemoryView(reader.mem)[(reader.index + n_scanned):(reader.filled % Int)],
         )
     end
     # If a newline was found, the current value of newline was relative to where
@@ -852,13 +852,13 @@ function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException
             newline - (1 + has_windows_newline)
         end
     end
-    parse_mem = ImmutableMemView(mem)[reader.index:last_index]
+    parse_mem = ImmutableMemoryView(mem)[reader.index:last_index]
     # If there is no memory to parse (and we have already verified that
     # there are no more bytes in the IO), we end
     if isempty(parse_mem)
         line = reader.line
         col = 0
-        @inbounds for b in ImmutableMemView(mem)[reader.index:reader.filled]
+        @inbounds for b in ImmutableMemoryView(mem)[reader.index:reader.filled]
             col += 1
             line += b == UInt8('\n')
             col *= b != UInt8('\n')

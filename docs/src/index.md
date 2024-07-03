@@ -12,7 +12,8 @@ end
 
 # PairwiseMappingFormat.jl
 This package is for reading files of the PAF (Pairwise mApping Format) format,
-which is a simple tab-delimited format used by e.g. minimap2 and strobealign.
+which is a simple tab-delimited format used by e.g. minimap2 and strobealign
+to store records representing pairwise alignment between biological sequences.
 
 ## Reader
 The [`PAFReader`](@ref) type wraps an `IO`, and is an iterator of [`PAFRecord`](@ref) objects:
@@ -34,32 +35,28 @@ Similar to the common `open(path) do io`-syntax in Julia, `PAFReader` takes an o
 `PAFReader` object, and close the underlying io when `f` returns (or errors):
 
 ```jldoctest
-PAFReader(open(path_to_paf)) do reader
-    for record in reader
-        println(record.qlen)
-    end
-end
-
-# output
+julia> PAFReader(open(path_to_paf)) do reader
+           for record in reader
+               println(record.qlen)
+           end
+       end
 301156
 299273
 288659
-
 ```
 
 The [`PAFReader`](@ref) constructor takes an optional keyword `copy`, which defaults to `true`.
 If it is `false`, the record will iterate the _same_ [`PAFRecord`](@ref) object, overwriting
 it in-place.
-This reduces allocations and give a slight speed increase, but may result in bugs
-if records, or references of records of previous iterations are stored:
+This reduces allocations and gives a slight speed increase, but may result in bugs
+if records, or references of records of previous iterations are stored and
+unexpectedly overwritten:
 
 ```jldoctest
-records = PAFReader(collect, open(path_to_paf); copy=false)
-println(map(i -> i.qlen, records))
+julia> records = PAFReader(collect, open(path_to_paf); copy=false);
 
-# output
+julia> println(map(i -> i.qlen, records)) # NB: All the same record!
 [288659, 288659, 288659]
-
 ```
 
 At the moments, readers do not support seeking.
@@ -69,15 +66,15 @@ The mutable [`PAFRecord`](@ref) object represents a single line in a PAF file.
 The individual columns of the PAF line is obtained by accessing properties of the records:
 
 ```jldoctest record
-record = PAFReader(first, open(path_to_paf))
+julia> record = PAFReader(first, open(path_to_paf));
 
-println(record.qname)
-println(record.qlen)
-println(record.mapq)
-
-# output
+julia> println(record.qname)
 query1
+
+julia> println(record.qlen)
 301156
+
+julia> println(record.mapq)
 0
 ```
 
@@ -137,34 +134,36 @@ The target name and the strand of an unmapped return is `nothing`.
 You can check if a record is mapped or unmapped with the function `is_mapped`:
 
 ```jldoctest unmapped
-unmapped = parse(PAFRecord, "myquery\t5032251\t9\t11\t*\t*\t5\t2\t1\t7\t4\t0")
-@assert !is_mapped(unmapped)
-println(unmapped.qname)
-println(unmapped.qlen)
-@assert isnothing(unmapped.tname)
-# The strand is given by is_rc, and is nothing for unmapped records
-@assert isnothing(unmapped.is_rc)
+julia> unmapped = parse(PAFRecord, "myquery\t5032251\t9\t11\t*\t*\t5\t2\t1\t7\t4\t0");
 
-# output
+julia> @assert !is_mapped(unmapped)
+
+julia> println(unmapped.qname)
 myquery
+
+julia> println(unmapped.qlen)
 5032251
+
+julia> @assert isnothing(unmapped.tname)
+
+julia> # The strand is given by is_rc, and is nothing for unmapped records
+       @assert isnothing(unmapped.is_rc)
 ```
 
 All other properties of unmapped records may contain arbitrary data, and should not be relied on.
 For this reason, the functions [`target_coverage`](@ref), [`query_coverage`](@ref) and [`aln_identity`](@ref)
 may give nonsense answers for unmapped records:
 ```jldoctest unmapped
-# Note! These results are arbitrary and not guaranteed to be stable
-# across minor releases of this package
-println(target_coverage(unmapped))
-println(query_coverage(unmapped))
-println(aln_identity(unmapped))
-
-# output
+julia> # Note! These results are arbitrary and not guaranteed to be stable
+       # across minor releases of this package
+       println(target_coverage(unmapped))
 Inf
-1.9871822768776836e-7
-NaN
 
+julia> println(query_coverage(unmapped))
+1.9871822768776836e-7
+
+julia> println(aln_identity(unmapped))
+NaN
 ```
 
 ## Low-level interface
@@ -233,7 +232,7 @@ julia> err.line
 1
 
 julia> err.kind
-TooFewFields
+TooFewFields::Err = 0
 ```
 
 The precise value of this `.kind` object for any given error condition is subject

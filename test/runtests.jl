@@ -4,7 +4,7 @@ using PairwiseMappingFormat
 using PairwiseMappingFormat: Errors, try_parse
 using Test
 using FormatSpecimens
-using MemViews
+using MemoryViews
 using Aqua
 
 using XAMAuxData.SAM: AuxTag
@@ -171,7 +171,7 @@ end
 # that the aux data has the right span and byte content.
 function test_aux_content(record_data::String, target_aux::String)
     rec = parse(PAFRecord, record_data)
-    @test collect(MemView(aux_data(rec))) == codeunits(target_aux)
+    @test collect(MemoryView(aux_data(rec))) == codeunits(target_aux)
 end
 
 @testset "Auxiliary data" begin

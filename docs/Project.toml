@@ -1,6 +1,6 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
-MemViews = "a791c907-b98b-4e44-8f4d-e4c2362c6b2f"
+MemoryViews = "a791c907-b98b-4e44-8f4d-e4c2362c6b2f"
 PairwiseMappingFormat = "30ee2946-b067-41c0-bed2-0900b78dbe59"
 StringViews = "354b36f9-a18e-4713-926e-db85100087ba"
 XAMAuxData = "e99d641e-1821-45d7-9150-ecb7bf333fe1"
