@@ -749,6 +749,8 @@ function read_buffer!(reader::PAFReader)::Int
             remaining = length(mem) - reader.filled
         end
     end
+
+    @assert !iszero(remaining)
     # This part annoys me a lot. Julia has no efficient API to read bytes
     # into a byte buffer. How on Earth can that be true?
     # * read! will throw EOF if the memory is too short, and there is no
@@ -759,26 +761,22 @@ function read_buffer!(reader::PAFReader)::Int
     # It uses bytesavailable to check how many bytes to read and avoid buffer overflows etc,
     # and when there are zero bytes available, it reads a single byte, hoping that
     # more bytes will be available.
-    if !iszero(remaining)
-        n_available = bytesavailable(reader.io)
+    n_available = bytesavailable(reader.io)
+    if iszero(n_available) && !eof(reader.io)
         # Read one byte and hope more bytes become available
-        if iszero(n_available) && !eof(reader.io)
-            byte = read(reader.io, UInt8)
-            @inbounds mem[reader.filled + 1] = byte
-            reader.filled += 1
-            remaining -= 1
-            n_available = bytesavailable(reader.io)
-        end
-        # Read with unsafe_read
-        n_bytes = min(n_available, remaining)
-        if !iszero(n_bytes)
-            GC.@preserve mem unsafe_read(reader.io, pointer(mem, reader.filled + 1), n_bytes)
-            reader.filled += n_bytes
-        end
-        return n_bytes
-    else
-        return 0
+        byte = read(reader.io, UInt8)
+        @inbounds mem[reader.filled + 1] = byte
+        reader.filled += 1
+        remaining -= 1
+        n_available = bytesavailable(reader.io)
     end
+    # Read with unsafe_read
+    n_bytes = min(n_available, remaining)
+    if !iszero(n_bytes)
+        GC.@preserve mem unsafe_read(reader.io, pointer(mem, reader.filled + 1), n_bytes)
+        reader.filled += n_bytes
+    end
+    return n_bytes
 end
 
 """
