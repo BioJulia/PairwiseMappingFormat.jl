@@ -461,7 +461,7 @@ function parse_line!(
     tend ≥ tstart || return ParserException(i % Int32, Errors.BackwardsIndices)
     tend > tlen && return ParserException(i % Int32, Errors.PositionOutOfBounds)
     (matches, i) = @? parse_int(mem, i, true)
-    (alnlen, i) = @? parse_int(mem, i, false)
+    (alnlen, i) = @? parse_int(mem, i, true)
     (mapq, i) = @? parse_int(mem, i, true, true)
     
     # A missing mapq is encoded as 255 in the PAF format, we store it as such
