@@ -57,6 +57,31 @@ end
     end
 end
 
+@testset "Coverage and identity" begin
+    function get_rec(qlen::Int, tlen::Int, matches::Int, alnlen::Int)
+        fields = split(
+            "my_qname\t301156\t3\t11\t+\tmy_tname\t6701780\t7\t13\t301142\t301142\t0",
+            '\t'
+        )
+        fields[2] = string(qlen)
+        fields[7] = string(tlen)
+        fields[10] = string(matches)
+        fields[11] = string(alnlen)
+        parse(PAFRecord, join(fields, '\t'))
+    end
+    @test isapprox(aln_identity(get_rec(500, 400, 325, 340)), 325 / 340)
+    @test isapprox(aln_identity(get_rec(12, 16, 9, 11)), 9 / 11)
+    @test isapprox(aln_identity(get_rec(100, 1000, 0, 99)), 0)
+
+    @test isapprox(query_coverage(get_rec(511, 398, 325, 340)), 8 / 511)
+    @test isapprox(query_coverage(get_rec(61, 19, 9, 9)), 8 / 61)
+    @test isapprox(query_coverage(get_rec(17, 16, 15, 16)), 8 / 17)
+
+    @test isapprox(target_coverage(get_rec(511, 398, 325, 340)), 6 / 398)
+    @test isapprox(target_coverage(get_rec(61, 19, 9, 9)), 6 / 19)
+    @test isapprox(target_coverage(get_rec(17, 16, 15, 16)), 6 / 16)
+end
+
 @testset "Edge case records" begin
     (rec1, rec2, rec3) = PAFReader(open(joinpath(path_of_format("PAF"), "good2.paf"))) do reader
         y = first(reader, 3)
@@ -102,11 +127,11 @@ end
     # Negative numbers, zero numbers
     @test with_replaced(good, 2, "-1") == Errors.BadInteger
 
-    for allow_zero in [3, 8, 10, 12]
+    for allow_zero in [3, 8, 10, 11, 12]
         @test with_replaced(good, allow_zero, "0") isa PAFRecord
     end
 
-    for not_allow_zero in [2, 4, 7, 9, 11]
+    for not_allow_zero in [2, 4, 7, 9]
         @test with_replaced(good, not_allow_zero, "0") == Errors.InvalidZero
     end
 
