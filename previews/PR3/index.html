@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Home · PairwiseMappingFormat.jl</title><meta name="title" content="Home · PairwiseMappingFormat.jl"/><meta property="og:title" content="Home · PairwiseMappingFormat.jl"/><meta property="twitter:title" content="Home · PairwiseMappingFormat.jl"/><meta name="description" content="Documentation for PairwiseMappingFormat.jl."/><meta property="og:description" content="Documentation for PairwiseMappingFormat.jl."/><meta property="twitter:description" content="Documentation for PairwiseMappingFormat.jl."/><script data-outdated-warner src="assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="assets/documenter.js"></script><script src="search_index.js"></script><script src="siteinfo.js"></script><script src="../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href>PairwiseMappingFormat.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li class="is-active"><a class="tocitem" href>Home</a><ul class="internal"><li><a class="tocitem" href="#Reader"><span>Reader</span></a></li><li><a class="tocitem" href="#Record"><span>Record</span></a></li><li><a class="tocitem" href="#Low-level-interface"><span>Low-level interface</span></a></li><li><a class="tocitem" href="#aux"><span>Auxiliary fields</span></a></li><li><a class="tocitem" href="#Misc-info"><span>Misc info</span></a></li><li><a class="tocitem" href="#Reference"><span>Reference</span></a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Home</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Home</a></li></ul></nav><div class="docs-right"><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="PairwiseMappingFormat.jl"><a class="docs-heading-anchor" href="#PairwiseMappingFormat.jl">PairwiseMappingFormat.jl</a><a id="PairwiseMappingFormat.jl-1"></a><a class="docs-heading-anchor-permalink" href="#PairwiseMappingFormat.jl" title="Permalink"></a></h1><p>This package is for reading files of the PAF (Pairwise mApping Format) format, which is a simple tab-delimited format used by e.g. minimap2 and strobealign to store records representing pairwise alignment between biological sequences.</p><h2 id="Reader"><a class="docs-heading-anchor" href="#Reader">Reader</a><a id="Reader-1"></a><a class="docs-heading-anchor-permalink" href="#Reader" title="Permalink"></a></h2><p>The <a href="#PairwiseMappingFormat.PAFReader"><code>PAFReader</code></a> type wraps an <code>IO</code>, and is an iterator of <a href="#PairwiseMappingFormat.PAFRecord"><code>PAFRecord</code></a> objects:</p><pre><code class="language-julia hljs">reader = PAFReader(open(path_to_paf))
+records = collect(reader)
+close(reader)
+
+@assert isempty(reader)
+@assert typeof(records) == Vector{PAFRecord}</code></pre><p>Similar to the common <code>open(path) do io</code>-syntax in Julia, <code>PAFReader</code> takes an optional <code>f::Function</code> as a first argument, in which case it will apply <code>f</code> to the returned <code>PAFReader</code> object, and close the underlying io when <code>f</code> returns (or errors):</p><pre><code class="language-julia-repl hljs">julia&gt; PAFReader(open(path_to_paf)) do reader
+           for record in reader
+               println(record.qlen)
+           end
+       end
+301156
+299273
+288659</code></pre><p>The <a href="#PairwiseMappingFormat.PAFReader"><code>PAFReader</code></a> constructor takes an optional keyword <code>copy</code>, which defaults to <code>true</code>. If it is <code>false</code>, the record will iterate the <em>same</em> <a href="#PairwiseMappingFormat.PAFRecord"><code>PAFRecord</code></a> object, overwriting it in-place. This reduces allocations and gives a slight speed increase, but may result in bugs if records, or references of records of previous iterations are stored and unexpectedly overwritten:</p><pre><code class="language-julia-repl hljs">julia&gt; records = PAFReader(collect, open(path_to_paf); copy=false);
+
+julia&gt; println(map(i -&gt; i.qlen, records)) # NB: All the same record!
+[288659, 288659, 288659]</code></pre><p>At the moments, readers do not support seeking.</p><h2 id="Record"><a class="docs-heading-anchor" href="#Record">Record</a><a id="Record-1"></a><a class="docs-heading-anchor-permalink" href="#Record" title="Permalink"></a></h2><p>The mutable <a href="#PairwiseMappingFormat.PAFRecord"><code>PAFRecord</code></a> object represents a single line in a PAF file. The individual columns of the PAF line is obtained by accessing properties of the records:</p><pre><code class="language-julia-repl hljs">julia&gt; record = PAFReader(first, open(path_to_paf));
+
+julia&gt; println(record.qname)
+query1
+
+julia&gt; println(record.qlen)
+301156
+
+julia&gt; println(record.mapq)
+0</code></pre><p>Note that <code>Base.getproperty</code> is overloaded for <code>PAFRecord</code>, so the properties are public and stable across major versions, but may not reflect the actual underlying fields as they are stored in the <code>PAFRecord</code>.</p><p>A description of the properties of <code>PAFRecord</code>s can be found in the docstring of <code>PAFRecord</code>, but here is a list of them:</p><pre><code class="language-julia hljs">properties = [
+    (:qname,   StringView),
+    (:qlen,    Int),
+    (:qstart,  Int),
+    (:qend,    Int),
+    (:tname,   StringView),
+    (:tlen,    Int),
+    (:tstart,  Int),
+    (:tend,    Int),
+    (:matches, Int),
+    (:alnlen,  Int),
+    (:mapq,    Union{Int, Nothing}),
+    (:is_rc,   Bool),
+]
+
+@assert length(propertynames(record)) == length(properties)
+
+for (property, type) in properties
+    @assert getproperty(record, property) isa type
+end</code></pre><p>The PAF format does not contain fields for alignment identity, query coverage or target coverage. However, these can be approximated with the functions <a href="#PairwiseMappingFormat.aln_identity"><code>aln_identity</code></a>, <a href="#PairwiseMappingFormat.query_coverage"><code>query_coverage</code></a> and <a href="#PairwiseMappingFormat.query_coverage"><code>query_coverage</code></a>.</p><p>Besides being iterated from <a href="#PairwiseMappingFormat.PAFReader"><code>PAFReader</code></a>, records can also be created by parsing from a bytes-like object such as a <code>String</code>:</p><pre><code class="language-julia hljs">data = &quot;contig_11\t288659\t27\t288653\t+\tCP004047.1\t6701780\t5027225\t5315851\t288618\t288626\t0\ttp:A:P\tcm:i:28871\ts1:i:288618\ts2:i:288618\tdv:f:0.0000\trl:i:57&quot;
+
+record = parse(PAFRecord, data)
+@assert record isa PAFRecord</code></pre><p>Rarely, PAF records are unmapped. An unmapped record contain the query id, the query length, and any <a href="#aux">auxiliary fields</a>. The target name and the strand of an unmapped return is <code>nothing</code>. You can check if a record is mapped or unmapped with the function <code>is_mapped</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; unmapped = parse(PAFRecord, &quot;myquery\t5032251\t9\t11\t*\t*\t5\t2\t1\t7\t4\t0&quot;);
+
+julia&gt; @assert !is_mapped(unmapped)
+
+julia&gt; println(unmapped.qname)
+myquery
+
+julia&gt; println(unmapped.qlen)
+5032251
+
+julia&gt; @assert isnothing(unmapped.tname)
+
+julia&gt; # The strand is given by is_rc, and is nothing for unmapped records
+       @assert isnothing(unmapped.is_rc)</code></pre><p>All other properties of unmapped records may contain arbitrary data, and should not be relied on. For this reason, the functions <a href="#PairwiseMappingFormat.target_coverage"><code>target_coverage</code></a>, <a href="#PairwiseMappingFormat.query_coverage"><code>query_coverage</code></a> and <a href="#PairwiseMappingFormat.aln_identity"><code>aln_identity</code></a> may give nonsense answers for unmapped records:</p><pre><code class="language-julia-repl hljs">julia&gt; # Note! These results are arbitrary and not guaranteed to be stable
+       # across minor releases of this package
+       println(target_coverage(unmapped))
+Inf
+
+julia&gt; println(query_coverage(unmapped))
+1.9871822768776836e-7
+
+julia&gt; println(aln_identity(unmapped))
+NaN</code></pre><h2 id="Low-level-interface"><a class="docs-heading-anchor" href="#Low-level-interface">Low-level interface</a><a id="Low-level-interface-1"></a><a class="docs-heading-anchor-permalink" href="#Low-level-interface" title="Permalink"></a></h2><p>Iterating <code>PAFReader</code>s, and the <code>parse</code> function will throw a <code>PairwiseMappingFormat.ParserException</code> if the data is invalid:</p><pre><code class="language-julia-repl hljs">julia&gt; parse(PAFRecord, &quot;not a PAF line&quot;)
+ERROR: Error when parsing PAF record on line 1, near byte number 14 in line: Not enough tab-separated fields. Each line must have at least 12 fields
+[...]</code></pre><p>In some circuomstances, throwing exceptions may not be acceptable, and so PairwiseMappingFormat.jl provide functionality for returning errors as values. These values can then be checked to programmatically handle error states.</p><p>The public, unexported <a href="#PairwiseMappingFormat.try_parse"><code>try_parse</code></a> function can be used instead of <code>Base.parse</code>. It either returns a valid <code>PAFRecord</code>, or else returns the <a href="#PairwiseMappingFormat.ParserException"><code>ParserException</code></a>, but does not throw the exception:</p><pre><code class="language-julia-repl hljs">julia&gt; const PAF = PairwiseMappingFormat;
+
+julia&gt; println(PAF.try_parse(&quot;not a PAF line&quot;))
+PairwiseMappingFormat.ParserException(PairwiseMappingFormat.Errors.TooFewFields, 14, 1)</code></pre><p>Similarly, the next record of a <code>PAFReader</code> may be obtained with the unexported <a href="#PairwiseMappingFormat.try_next!"><code>try_next!</code></a> function. This function will either:</p><ul><li>Return <code>nothing</code> if the reader has no more records</li><li>Return a <code>ParserException</code> if the next record is invalid</li><li>Return a <code>PAFRecord</code> if there is another valid record. Only in this case it will advance the position of the reader.</li></ul><p>In other words, if a call to <a href="#PairwiseMappingFormat.try_next!"><code>try_next!</code></a> returns <code>nothing</code> or a <code>ParserException</code>, any future calls will return the same value forever:</p><pre><code class="language-julia hljs">reader = PAFReader(open(path_to_paf))
+
+# Emits `PAFRecord` for valid records
+records = [try_next!(reader) for i in 1:3]
+@assert records isa Vector{PAFRecord}
+
+# Indefinitely emits `nothing` once the reader is empty
+nothings = [try_next!(reader) for i in 1:10]
+@assert nothings isa Vector{Nothing}
+
+close(reader)
+
+reader = PAFReader(IOBuffer(&quot;not a PAF record&quot;))
+err = try_next!(reader)
+
+@assert err isa PAF.ParserException
+err2 = try_next!(reader)
+@assert err == err2</code></pre><p>The <a href="#PairwiseMappingFormat.ParserException"><code>ParserException</code></a> type contains the error type as an <code>Enum</code>, and the line where the exception occurred. These can be obtained with the <code>.kind</code> and <code>.line</code> properties.</p><pre><code class="language-julia-repl hljs">julia&gt; err.line
+1
+
+julia&gt; err.kind
+TooFewFields::Err = 0</code></pre><p>The precise value of this <code>.kind</code> object for any given error condition is subject to change across minor versions and new values may be introduced. This is because the same error may be detected in multiple different ways.</p><h2 id="aux"><a class="docs-heading-anchor" href="#aux">Auxiliary fields</a><a id="aux-1"></a><a class="docs-heading-anchor-permalink" href="#aux" title="Permalink"></a></h2><p><a href="#PairwiseMappingFormat.PAFRecord"><code>PAFRecord</code></a>s may contain extra auxiliary fields at the end of the records, similar to SAM records. Any auxiliary data is stored in the <code>PAFRecord</code>, and lazily parsed and validated as they are accessed. This means that a <code>PAFRecord</code> may contain invalid auxiliary data.</p><p>The <a href="#PairwiseMappingFormat.aux_data"><code>aux_data</code></a> function constructs a lazy <code>SAM.Auxiliary</code> object from the package XAMAuxData.jl. The precise semantics of this <code>Auxiliary</code> type is a little complicated, and can be found in the documentation of XAMAuxData.jl. Here is a small example:</p><pre><code class="language-julia-repl hljs">julia&gt; line = first(eachline(path_to_paf));
+
+julia&gt; aux_string = join(split(line, &#39;\t&#39;)[13:end], &#39;\t&#39;)
+&quot;tp:A:P\tcm:i:29990\tdv:f:0.0000\tkm:Z:some text here&quot;
+
+julia&gt; record = parse(PAFRecord, line);
+
+julia&gt; aux = aux_data(record);
+
+julia&gt; isvalid(aux)
+true
+
+julia&gt; aux[&quot;tp&quot;]
+&#39;P&#39;: ASCII/Unicode U+0050 (category Lu: Letter, uppercase)
+
+julia&gt; aux[&quot;km&quot;]
+&quot;some text here&quot;
+
+julia&gt; haskey(aux, &quot;cm&quot;)
+true
+
+julia&gt; aux[&quot;AB&quot;] = 5.5;
+
+julia&gt; haskey(aux, &quot;AB&quot;)
+true</code></pre><h2 id="Misc-info"><a class="docs-heading-anchor" href="#Misc-info">Misc info</a><a id="Misc-info-1"></a><a class="docs-heading-anchor-permalink" href="#Misc-info" title="Permalink"></a></h2><ul><li>The <code>PAFReader</code> cannot handle trailing whitespace, except trailing newlines at the end of the file. This is because trailing whitespace may be significant in some records, e.g. if it ends with an auxiliary field of the element type <code>Z</code>. A PAF record with trailing whitespace is considered invalid.</li></ul><h2 id="Reference"><a class="docs-heading-anchor" href="#Reference">Reference</a><a id="Reference-1"></a><a class="docs-heading-anchor-permalink" href="#Reference" title="Permalink"></a></h2><article class="docstring"><header><a class="docstring-article-toggle-button fa-solid fa-chevron-down" href="javascript:;" title="Collapse docstring"></a><a class="docstring-binding" id="PairwiseMappingFormat.PAFReader" href="#PairwiseMappingFormat.PAFReader"><code>PairwiseMappingFormat.PAFReader</code></a> — <span class="docstring-category">Type</span><span class="is-flex-grow-1 docstring-article-toggle-button" title="Collapse docstring"></span></header><section><div><pre><code class="language-julia hljs">PAFReader(io::IO; copy::Bool=true)</code></pre><p>Construct a <code>PAFReader</code>, an iterator of <a href="#PairwiseMappingFormat.PAFRecord"><code>PAFRecord</code></a> read from <code>io</code>. Iterating this object returns a <code>PAFRecord</code> for each valid line of input, and throws a <a href="#PairwiseMappingFormat.ParserException"><code>ParserException</code></a> when an invalid record is found. For efficiency, the auxiliary fields are not validated until they are accessed.</p><p>If <code>copy</code> is false, the <em>same</em> record will be returned on each iteration, with its content being overwritten. This removes a few allocations per iteration, but may cause problems if records of old iterations are stored.</p><p><strong>Examples</strong></p><pre><code class="language-julia-repl hljs">julia&gt; reader = PAFReader(open(path_to_paf)); typeof(reader)
+PAFReader{IOStream}
+
+julia&gt; typeof(first(reader))
+PAFRecord
+
+julia&gt; PAFReader(open(path_to_paf)) do reader
+           for record in reader
+                println(record.qlen)
+           end
+       end
+301156
+299273
+288659
+
+julia&gt; PAFReader(open(path_to_paf); copy=false) do reader
+           fst = first(reader)
+           all(reader) do record
+               record === fst
+           end
+       end
+true</code></pre><p>See also: <a href="#PairwiseMappingFormat.PAFRecord"><code>PAFRecord</code></a>, <a href="#PairwiseMappingFormat.try_next!"><code>try_next!</code></a></p></div></section></article><article class="docstring"><header><a class="docstring-article-toggle-button fa-solid fa-chevron-down" href="javascript:;" title="Collapse docstring"></a><a class="docstring-binding" id="PairwiseMappingFormat.PAFRecord" href="#PairwiseMappingFormat.PAFRecord"><code>PairwiseMappingFormat.PAFRecord</code></a> — <span class="docstring-category">Type</span><span class="is-flex-grow-1 docstring-article-toggle-button" title="Collapse docstring"></span></header><section><div><pre><code class="language-julia hljs">PAFRecord(buffer_size::Int)</code></pre><p>Mutable type representing a single PAF line. The content of the record is accessed through its properties.</p><p><strong>Examples</strong></p><pre><code class="language-julia-repl hljs">julia&gt; record = PAFReader(first, open(path_to_paf));
+
+julia&gt; record.qname
+&quot;query1&quot;
+
+julia&gt; record.qlen
+301156</code></pre><p>See also: <a href="#PairwiseMappingFormat.PAFReader"><code>PAFReader</code></a></p><p><strong>Extended help</strong></p><p>The following properties may be used:</p><ul><li><code>qname::StringView</code>. The query name, May be empty, and contain any bytes except <code></code> and `</li></ul><p>`.</p><ul><li><code>tname::Union{StringView, Nothing}</code>. Target name. Like <code>qname</code>, but is <code>nothing</code> if and only if the record is unmapped.</li><li><code>qlen</code> and <code>tlen::Int</code>, and gives the length of the query and target sequences, respectively. This must be &gt; 0.</li><li><code>qstart</code>, <code>qend</code>, <code>tstart</code> and <code>tend::Int</code>, and give the starting and ending positions of the alignments on the query and target strand. These uses one-based, closed interval indexing as usual in Julia, but unlike the underlying PAF format. The ending positions are always &gt;= the starting ones, and the ending positions are always &lt;= the query/target lengths.</li><li><code>matches::Int</code> gives the number of nucleotides / residues which match (i.e. are equal) in the alignment.</li><li><code>alnlen::Int</code> gives the length of the alignment</li><li><code>mapq::Union{Int, Nothing}</code> gives the mapping quality, or <code>nothing</code> if  this information is unavailable.</li><li><code>is_rc::Union{Bool,Nothing}</code> tells if the query and target strands are reverse-complement relative to each other. Is <code>nothing</code> if the record is unmapped.</li></ul></div></section></article><article class="docstring"><header><a class="docstring-article-toggle-button fa-solid fa-chevron-down" href="javascript:;" title="Collapse docstring"></a><a class="docstring-binding" id="PairwiseMappingFormat.aux_data" href="#PairwiseMappingFormat.aux_data"><code>PairwiseMappingFormat.aux_data</code></a> — <span class="docstring-category">Function</span><span class="is-flex-grow-1 docstring-article-toggle-button" title="Collapse docstring"></span></header><section><div><pre><code class="language-julia hljs">aux_data(rec::Record) -&gt; XAMAuxData.SAM.Auxiliary</code></pre><p>Return a lazily evaluated and validated <code>SAM.Auxiliary</code>, which is an <code>AbstractDict</code> of the auxiliary fields at the end of the record. For more details about this object, read the documentation of the package XAMAuxData.jl.</p><p><strong>Examples</strong></p><pre><code class="language-julia-repl hljs">julia&gt; aux = aux_data(record);
+
+julia&gt; length(aux)
+4
+
+julia&gt; aux[&quot;cm&quot;]
+29990
+
+julia&gt; aux[&quot;k1&quot;] = &quot;add a new aux string like this&quot;;
+
+julia&gt; haskey(aux, &quot;k1&quot;)
+true</code></pre></div></section></article><article class="docstring"><header><a class="docstring-article-toggle-button fa-solid fa-chevron-down" href="javascript:;" title="Collapse docstring"></a><a class="docstring-binding" id="PairwiseMappingFormat.aln_identity" href="#PairwiseMappingFormat.aln_identity"><code>PairwiseMappingFormat.aln_identity</code></a> — <span class="docstring-category">Function</span><span class="is-flex-grow-1 docstring-article-toggle-button" title="Collapse docstring"></span></header><section><div><pre><code class="language-julia hljs">aln_identity(rec::Record) -&gt; Float64</code></pre><p>Return the nucleotide / residue identity, defined as the number of matches divided by the alignment length. This is a number between 0 and 1.</p><p><strong>Examples</strong></p><pre><code class="language-julia-repl hljs">julia&gt; aln_identity(record)
+1.0</code></pre><p>See also: <a href="#PairwiseMappingFormat.query_coverage"><code>query_coverage</code></a>, <a href="#PairwiseMappingFormat.target_coverage"><code>target_coverage</code></a></p></div></section></article><article class="docstring"><header><a class="docstring-article-toggle-button fa-solid fa-chevron-down" href="javascript:;" title="Collapse docstring"></a><a class="docstring-binding" id="PairwiseMappingFormat.query_coverage" href="#PairwiseMappingFormat.query_coverage"><code>PairwiseMappingFormat.query_coverage</code></a> — <span class="docstring-category">Function</span><span class="is-flex-grow-1 docstring-article-toggle-button" title="Collapse docstring"></span></header><section><div><pre><code class="language-julia hljs">query_coverage(rec::Record) -&gt; Float64</code></pre><p>Compute the fraction of the query covered by the alignment.</p><p><strong>Examples</strong></p><pre><code class="language-julia-repl hljs">julia&gt; query_coverage(record)
+0.9999535124653004</code></pre><p>See also: <a href="#PairwiseMappingFormat.target_coverage"><code>target_coverage</code></a>, <a href="#PairwiseMappingFormat.aln_identity"><code>aln_identity</code></a></p></div></section></article><article class="docstring"><header><a class="docstring-article-toggle-button fa-solid fa-chevron-down" href="javascript:;" title="Collapse docstring"></a><a class="docstring-binding" id="PairwiseMappingFormat.target_coverage" href="#PairwiseMappingFormat.target_coverage"><code>PairwiseMappingFormat.target_coverage</code></a> — <span class="docstring-category">Function</span><span class="is-flex-grow-1 docstring-article-toggle-button" title="Collapse docstring"></span></header><section><div><pre><code class="language-julia hljs">target_coverage(rec::Record) -&gt; Float64</code></pre><p>Compute the fraction of the target covered by the alignment.</p><p><strong>Examples</strong></p><pre><code class="language-julia-repl hljs">julia&gt; target_coverage(record)
+0.044934629307437725</code></pre><p>See also: <a href="#PairwiseMappingFormat.query_coverage"><code>query_coverage</code></a>, <a href="#PairwiseMappingFormat.aln_identity"><code>aln_identity</code></a></p></div></section></article><article class="docstring"><header><a class="docstring-article-toggle-button fa-solid fa-chevron-down" href="javascript:;" title="Collapse docstring"></a><a class="docstring-binding" id="PairwiseMappingFormat.try_next!" href="#PairwiseMappingFormat.try_next!"><code>PairwiseMappingFormat.try_next!</code></a> — <span class="docstring-category">Function</span><span class="is-flex-grow-1 docstring-article-toggle-button" title="Collapse docstring"></span></header><section><div><pre><code class="language-julia hljs">try_next!(reader::PAFReader) -&gt; Union{Nothing, PAFRecord, ParserException}</code></pre><p>Try to read a record from the <a href="#PairwiseMappingFormat.PAFReader"><code>PAFReader</code></a> and advance the reader. This may yield one of three options:</p><ul><li>If the reader is empty, return <code>nothing</code> and do not advance the reader</li><li>If the next record is invalid, return (do not throw) a <code>ParserException</code> and do not advance the reader</li><li>If the next record is valid, return it as a <a href="#PairwiseMappingFormat.PAFRecord"><code>PAFRecord</code></a> and advance the reader</li></ul><p>Even if the reader itself is not advanced, it may still fill its internal buffer, advancing the <code>IO</code> object it wraps.</p><p><strong>Examples</strong></p><pre><code class="language-julia-repl hljs">julia&gt; reader = PAFReader(open(path_to_paf));
+
+julia&gt; try_next!(reader) isa PAFRecord
+true
+
+julia&gt; [try_next!(reader) for i in 1:2] isa Vector{PAFRecord}
+true
+
+julia&gt; typeof([try_next!(reader) for i in 1:100])
+Vector{Nothing} (alias for Array{Nothing, 1})
+
+julia&gt; close(reader); reader = PAFReader(IOBuffer(&quot;bad data&quot;));
+
+julia&gt; try_next!(reader) isa PAF.ParserException
+true
+
+julia&gt; all(i -&gt; try_next!(reader) isa PAF.ParserException, 1:100)
+true</code></pre></div></section></article><article class="docstring"><header><a class="docstring-article-toggle-button fa-solid fa-chevron-down" href="javascript:;" title="Collapse docstring"></a><a class="docstring-binding" id="PairwiseMappingFormat.is_mapped" href="#PairwiseMappingFormat.is_mapped"><code>PairwiseMappingFormat.is_mapped</code></a> — <span class="docstring-category">Function</span><span class="is-flex-grow-1 docstring-article-toggle-button" title="Collapse docstring"></span></header><section><div><pre><code class="language-julia hljs">is_mapped(x::PAFRecord) -&gt; Bool</code></pre><p>Compute whether the <code>PAFRecord</code> is mapped. An unmapped record will have the properties <code>is_rc</code> and <code>tname</code> unavailable. The properties <code>qname</code> and <code>qlen</code>, and the auxiliary data of an unmapped record can be relied on, but the remaining properties contain arbitrary data. Note that some PAF parsers do not handle unmapped records correctly, so be wary when writing unmapped records.</p><p><strong>Examples</strong></p><pre><code class="language-jldoctes hljs">julia&gt; is_mapped(record)
+true</code></pre><p>See also: <a href="#PairwiseMappingFormat.PAFRecord"><code>PAFRecord</code></a></p></div></section></article><article class="docstring"><header><a class="docstring-article-toggle-button fa-solid fa-chevron-down" href="javascript:;" title="Collapse docstring"></a><a class="docstring-binding" id="PairwiseMappingFormat.try_parse" href="#PairwiseMappingFormat.try_parse"><code>PairwiseMappingFormat.try_parse</code></a> — <span class="docstring-category">Function</span><span class="is-flex-grow-1 docstring-article-toggle-button" title="Collapse docstring"></span></header><section><div><pre><code class="language-julia hljs">try_parse(x) -&gt; Union{PAFRecord, ParserException}</code></pre><p>Try parsing <code>x</code> into a <code>PAFRecord</code>. <code>x</code> may be any type that implements <code>MemoryView</code>, such as <code>String</code> or <code>Vector{UInt8}</code>.</p><p><strong>Examples</strong></p><pre><code class="language-julia-repl hljs">julia&gt; valid_line = open(readline, path_to_paf);
+
+julia&gt; typeof(PAF.try_parse(valid_line))
+PAFRecord
+
+julia&gt; typeof(PAF.try_parse(&quot;invalid string&quot;))
+PairwiseMappingFormat.ParserException</code></pre><p>See also: <a href="#PairwiseMappingFormat.PAFRecord"><code>PAFRecord</code></a>, <a href="#PairwiseMappingFormat.try_next!"><code>try_next!</code></a></p></div></section></article><article class="docstring"><header><a class="docstring-article-toggle-button fa-solid fa-chevron-down" href="javascript:;" title="Collapse docstring"></a><a class="docstring-binding" id="PairwiseMappingFormat.ParserException" href="#PairwiseMappingFormat.ParserException"><code>PairwiseMappingFormat.ParserException</code></a> — <span class="docstring-category">Type</span><span class="is-flex-grow-1 docstring-article-toggle-button" title="Collapse docstring"></span></header><section><div><pre><code class="language-julia hljs">ParserException</code></pre><p>The exception type thrown by iterating <a href="#PairwiseMappingFormat.PAFReader"><code>PAFReader</code></a>, or a failed <code>parse</code> of a <a href="#PairwiseMappingFormat.PAFRecord"><code>PAFRecord</code></a>. The functions <code>try_parse</code> and <code>try_next!</code> may return (not throw) values of this type. The line the error occurred may be accessed with the <code>.line</code> field. The error kind may be accessed with the <code>.kind</code> field.</p><p><strong>Examples</strong></p><pre><code class="language-julia-repl hljs">julia&gt; err = PAF.try_parse(&quot;abc&quot;);
+
+julia&gt; err.line
+1
+
+julia&gt; print(err.kind)
+TooFewFields</code></pre></div></section></article></article><nav class="docs-footer"><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.8.0 on <span class="colophon-date" title="Friday 13 December 2024 07:58">Friday 13 December 2024</span>. Using Julia version 1.11.2.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
