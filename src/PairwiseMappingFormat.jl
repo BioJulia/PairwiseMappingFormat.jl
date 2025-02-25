@@ -6,13 +6,7 @@ Parse files of the PairwisemAppingFormat (PAF) format.
 module PairwiseMappingFormat
 
 export PAFReader,
-    PAFRecord,
-    aln_identity,
-    aux_data,
-    try_next!,
-    query_coverage,
-    target_coverage,
-    is_mapped
+    PAFRecord, aln_identity, aux_data, try_next!, query_coverage, target_coverage, is_mapped
 
 # Not exported, because this very PAF-specific, and operates on foreign types.
 public try_parse, ParserException, Errors, Err
@@ -54,7 +48,7 @@ See also: [`PAFReader`](@ref)
 # Extended help
 The following properties may be used:
 * `qname::StringView`. The query name, May be empty, and contain any bytes
-  except `\t` and `\n`.
+  except `\\t` and `\\n`.
 * `tname::Union{StringView, Nothing}`. Target name. Like `qname`, but is `nothing`
   if and only if the record is unmapped.
 * `qlen` and `tlen::Int`, and gives the length of the query and target
@@ -138,7 +132,22 @@ function is_rc(record::PAFRecord)::Union{Bool, Nothing}
 end
 
 # For tab completion
-Base.propertynames(::PAFRecord) = (:qname, :tname, :mapq, :qlen, :qstart, :qend, :tlen, :tstart, :tend, :matches, :alnlen, :is_rc)
+function Base.propertynames(::PAFRecord)
+    (
+        :qname,
+        :tname,
+        :mapq,
+        :qlen,
+        :qstart,
+        :qend,
+        :tlen,
+        :tstart,
+        :tend,
+        :matches,
+        :alnlen,
+        :is_rc,
+    )
+end
 
 function PAFRecord(size::Int=0)
     data = Vector{UInt8}(undef, max(size, 0))
@@ -178,14 +187,16 @@ end
 
 # Return StringView to not allocate
 function qname(record::PAFRecord)
-    StringView(ImmutableMemoryView(getfield(record, :data))[1:(getfield(record, :qname_len))])
+    StringView(
+        ImmutableMemoryView(getfield(record, :data))[1:(getfield(record, :qname_len))],
+    )
 end
 
 # Return StringView to not allocate
 function tname(record::PAFRecord)::Union{StringView, Nothing}
     if is_mapped(record)
         ql = getfield(record, :qname_len)
-        span = (ql+ 1):(ql + getfield(record, :tname_len))
+        span = (ql + 1):(ql + getfield(record, :tname_len))
         StringView(ImmutableMemoryView(getfield(record, :data))[span])
     else
         nothing
@@ -439,7 +450,8 @@ function parse_line!(
 
     # Load the strand field. We need at least 14 more bytes to encode 7 more mandatory fields
     # plus 7 more tabs.
-    i + 14 > lastindex(mem) && return ParserException(lastindex(mem) % Int32, Errors.TooFewFields)
+    i + 14 > lastindex(mem) &&
+        return ParserException(lastindex(mem) % Int32, Errors.TooFewFields)
     b = @inbounds mem[i]
     strand = if b == UInt8('*')
         return finish_unmapped!(record, mem, qname, qlen, i + 2)
@@ -463,7 +475,7 @@ function parse_line!(
     (matches, i) = @? parse_int(mem, i, true)
     (alnlen, i) = @? parse_int(mem, i, true)
     (mapq, i) = @? parse_int(mem, i, true, true)
-    
+
     # A missing mapq is encoded as 255 in the PAF format, we store it as such
     mapq = if mapq > 255
         return ParserException(i % Int32, Errors.IntegerOverflow)
@@ -483,7 +495,6 @@ function parse_line!(
     unsafe_copyto!(dataview[doff:end], mem[tname])
     doff += length(tname)
     iszero(auxlen) || unsafe_copyto!(dataview[doff:end], mem[i:end])
-    
 
     # Fill in fields of the struct
     # Note: PAF uses zero-based semi-open indexing like e.g. Python,
@@ -512,7 +523,7 @@ function finish_unmapped!(
     mem::ImmutableMemoryView{UInt8},
     qname::UnitRange{Int},
     qlen::Int32,
-    i::Int
+    i::Int,
 )
     # Determine the position of aux data
     for _ in 1:6
@@ -534,7 +545,7 @@ function finish_unmapped!(
     dataview = MemoryView(data)
     length(data) == filled || resize!(data, filled)
     unsafe_copyto!(dataview, mem[qname])
-    unsafe_copyto!(dataview[length(qname)+1:end], mem[aux])
+    unsafe_copyto!(dataview[(length(qname) + 1):end], mem[aux])
 
     # Fill in fields
     record.qname_len = length(qname) % Int32
@@ -551,7 +562,6 @@ function finish_unmapped!(
     record.strand = 0x00
 
     record
-
 end
 
 # Just get the index of the next \t
@@ -563,7 +573,7 @@ function parse_str(
     if isnothing(i)
         ParserException(lastindex(v) % Int32, Errors.TooFewFields)
     else
-        (from:i-1, i + 1)
+        (from:(i - 1), i + 1)
     end
 end
 
@@ -581,7 +591,8 @@ function parse_int(
         # If we hit a tab, this field is over.
         if b == UInt8('\t')
             i == from && return ParserException(i % Int32, Errors.EmptyInteger)
-            (!allow_zero & iszero(n)) && return ParserException(i % Int32, Errors.InvalidZero)
+            (!allow_zero & iszero(n)) &&
+                return ParserException(i % Int32, Errors.InvalidZero)
             return (n, i + 1)
         end
         b ∈ 0x30:0x39 || return ParserException(i % Int32, Errors.BadInteger)
@@ -693,7 +704,7 @@ function Base.copy(record::PAFRecord)
     )
 end
 
-function Base.iterate(reader::PAFReader, ::Nothing=nothing)
+function Base.iterate(reader::PAFReader, (::Nothing)=nothing)
     res = try_next!(reader)
     if res isa ParserException
         throw(res)
@@ -868,7 +879,8 @@ function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException
     end
     # If this results in an error, we return the error.
     res = parse_line!(reader.record, parse_mem)
-    res isa ParserException && return ParserException(res.kind, getfield(res, :index_in_line), reader.line)
+    res isa ParserException &&
+        return ParserException(res.kind, getfield(res, :index_in_line), reader.line)
     # Else, we update the reader. This means `next!` will continuously return
     # an error if an error is found.
     # If the newline was found, we compensate for the newline by skipping that byte in
