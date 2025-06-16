@@ -82,34 +82,27 @@ Note that `Base.getproperty` is overloaded for `PAFRecord`, so the properties
 are public and stable across major versions, but may not reflect the actual
 underlying fields as they are stored in the `PAFRecord`.
 
-A description of the properties of `PAFRecord`s can be found in the docstring of
-`PAFRecord`, but here is a list of them:
-
-```jldoctest record; output = false
-properties = [
-    (:qname,   StringView),
-    (:qlen,    Int),
-    (:qstart,  Int),
-    (:qend,    Int),
-    (:tname,   StringView),
-    (:tlen,    Int),
-    (:tstart,  Int),
-    (:tend,    Int),
-    (:matches, Int),
-    (:alnlen,  Int),
-    (:mapq,    Union{Int, Nothing}),
-    (:is_rc,   Bool),
-]
-
-@assert length(propertynames(record)) == length(properties)
-
-for (property, type) in properties
-    @assert getproperty(record, property) isa type
-end
-
-# output
-
-```
+### Fields of `PAFRecord`
+* `qname::StringView{A}`. `A` is an implementation detail.
+  Names of the query sequences
+  When the sequences are from a FASTA file, this is typically the _identifier_ of the
+  FASTA records, i.e. the part of the header before the first space.
+* `tname::Union{Nothing, StringView{A}}`. Same as `qname`, but for the target (i.e. subject)
+  sequence. May be `nothing` if the record is unmapped.
+* `qlen` and `tlen`. Of type `Int`. Length of the full query and target sequence.
+* `qstart` and `tstart`. Of type `Int`. Leftmost (i.e. lowest) position of the alignment
+  in the query and target, respectively. This does not take strandedness into account.
+* `qend` and `tend`. Of type `Int`. Rightmost (i.e. highest) position of the alignment
+  in the query and target, respectively. This does not take strandedness into account.
+  As such, we always have `record.qend - record.qtart) >= 0`, and likewise for the target.
+* `alnlen::Int`. Length of alignment. That includes gaps in query and target, and may therefore
+  not match either `qend - qstart + 1`, or that of the target.
+* `matches::Int`. Number of residue matches (not mismatches) in the alignment.
+  `matches / alnlen` is the alignment identity and is between 0 and 1.
+* `mapq::Union{Int, Nothing}`. Mapping quality, from 0:254, where 254 is the better quality.
+  When calibrated, the probability the mapping is correct should be 10^(-mapq / 10).
+  A value of `nothing` indicates the mapping quality is unavailable.
+* `is_rc::Union{Bool, Nothing}` indicates whether the alignment matches the target on the forward (`false`) or reverse-complement `true` strand. A missing alignment is `nothing`.
 
 The PAF format does not contain fields for alignment identity, query coverage
 or target coverage.
@@ -290,6 +283,7 @@ true
 
 ## Reference
 ```@docs
+PairwiseMappingFormat.PairwiseMappingFormat
 PAFReader
 PAFRecord
 aux_data
@@ -298,6 +292,7 @@ query_coverage
 target_coverage
 try_next!
 is_mapped
+PairwiseMappingFormat.Errors
 PairwiseMappingFormat.try_parse
 PairwiseMappingFormat.ParserException
 ```

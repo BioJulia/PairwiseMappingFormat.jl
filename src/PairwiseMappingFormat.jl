@@ -305,7 +305,7 @@ julia> print(PAF.Errors.InvalidZero)
 InvalidZero
 ```
 
-See also: [`ParserException`](@ref)
+See also: [`PairwiseMappingFormat.ParserException`](@ref)
 """
 module Errors
 public Err
