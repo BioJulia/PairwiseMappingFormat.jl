@@ -91,7 +91,7 @@ end
 # Since the interface of the records are defined in terms of its
 # properties, we need to be able to abstract over them
 function Base.getproperty(record::PAFRecord, sym::Symbol)
-    if sym === :qname
+    return if sym === :qname
         qname(record)
     elseif sym == :tname
         tname(record)
@@ -128,12 +128,12 @@ is_mapped(x::PAFRecord) = !iszero(getfield(x, :strand))
 
 function is_rc(record::PAFRecord)::Union{Bool, Nothing}
     x = getfield(record, :strand)
-    iszero(x) ? nothing : x == 0x02
+    return iszero(x) ? nothing : x == 0x02
 end
 
 # For tab completion
 function Base.propertynames(::PAFRecord)
-    (
+    return (
         :qname,
         :tname,
         :mapq,
@@ -149,9 +149,9 @@ function Base.propertynames(::PAFRecord)
     )
 end
 
-function PAFRecord(size::Int=0)
+function PAFRecord(size::Int = 0)
     data = Vector{UInt8}(undef, max(size, 0))
-    PAFRecord(data, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0xff, 0x00)
+    return PAFRecord(data, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0xff, 0x00)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", record::PAFRecord)
@@ -161,16 +161,16 @@ function Base.show(io::IO, ::MIME"text/plain", record::PAFRecord)
     println(buf, "  Query:    \"", qname(record), '"')
     if is_mapped(record)
         println(buf, "  Target:   \"", tname(record), '"')
-        println(buf, "  Q cov:    ", round(query_coverage(record); digits=4))
-        println(buf, "  T cov:    ", round(target_coverage(record); digits=4))
-        println(buf, "  Identity: ", round(aln_identity(record); digits=4))
+        println(buf, "  Q cov:    ", round(query_coverage(record); digits = 4))
+        println(buf, "  T cov:    ", round(target_coverage(record); digits = 4))
+        println(buf, "  Identity: ", round(aln_identity(record); digits = 4))
         qual = mapq(record)
         qual = qual === nothing ? "255 (missing)" : string(qual)
         println(buf, "  Quality:  ", qual)
     end
     print(buf, "  Aux data: ")
     write(buf, repr_aux(record))
-    print(io, String(take!(buf)))
+    return print(io, String(take!(buf)))
 end
 
 # Print the AUX fields indented
@@ -179,22 +179,22 @@ function repr_aux(record::PAFRecord)::Vector{UInt8}
     out = IOBuffer()
     show(buf, MIME"text/plain"(), aux_data(record))
     seekstart(buf)
-    for line in eachline(buf; keep=true)
+    for line in eachline(buf; keep = true)
         write(out, "  ", line)
     end
-    take!(out)[3:end]
+    return take!(out)[3:end]
 end
 
 # Return StringView to not allocate
 function qname(record::PAFRecord)
-    StringView(
+    return StringView(
         ImmutableMemoryView(getfield(record, :data))[1:(getfield(record, :qname_len))],
     )
 end
 
 # Return StringView to not allocate
 function tname(record::PAFRecord)::Union{StringView, Nothing}
-    if is_mapped(record)
+    return if is_mapped(record)
         ql = getfield(record, :qname_len)
         span = (ql + 1):(ql + getfield(record, :tname_len))
         StringView(ImmutableMemoryView(getfield(record, :data))[span])
@@ -206,7 +206,7 @@ end
 # Note: We return nothing instead of missing because fuck missing
 function mapq(record::PAFRecord)::Union{Int, Nothing}
     x = getfield(record, :mapq)
-    x == 0xff ? nothing : Int(x)
+    return x == 0xff ? nothing : Int(x)
 end
 
 """
@@ -225,7 +225,7 @@ julia> aln_identity(record)
 See also: [`query_coverage`](@ref), [`target_coverage`](@ref)
 """
 function aln_identity(record::PAFRecord)::Float64
-    record.matches / record.alnlen
+    return record.matches / record.alnlen
 end
 
 """
@@ -242,7 +242,7 @@ julia> query_coverage(record)
 See also: [`target_coverage`](@ref), [`aln_identity`](@ref)
 """
 function query_coverage(record::PAFRecord)::Float64
-    (record.qend - record.qstart + Int32(1)) / record.qlen
+    return (record.qend - record.qstart + Int32(1)) / record.qlen
 end
 
 """
@@ -259,7 +259,7 @@ julia> target_coverage(record)
 See also: [`query_coverage`](@ref), [`aln_identity`](@ref)
 """
 function target_coverage(record::PAFRecord)::Float64
-    (record.tend - record.tstart + Int32(1)) / record.tlen
+    return (record.tend - record.tstart + Int32(1)) / record.tlen
 end
 
 """
@@ -287,7 +287,7 @@ true
 ```
 """
 function aux_data(record::PAFRecord)
-    Auxiliary(
+    return Auxiliary(
         getfield(record, :data),
         getfield(record, :qname_len) + getfield(record, :tname_len) + 1,
     )
@@ -308,19 +308,19 @@ InvalidZero
 See also: [`PairwiseMappingFormat.ParserException`](@ref)
 """
 module Errors
-public Err
-# See descriptions in the `showerror` method below.
-@enum Err::Int32 begin
-    TooFewFields
-    IntegerOverflow
-    BadInteger
-    InvalidStrand
-    EmptyNonTailingLine
-    BackwardsIndices
-    EmptyInteger
-    InvalidZero
-    PositionOutOfBounds
-end
+    public Err
+    # See descriptions in the `showerror` method below.
+    @enum Err::Int32 begin
+        TooFewFields
+        IntegerOverflow
+        BadInteger
+        InvalidStrand
+        EmptyNonTailingLine
+        BackwardsIndices
+        EmptyInteger
+        InvalidZero
+        PositionOutOfBounds
+    end
 end # module Errors
 
 using .Errors: Err
@@ -356,7 +356,7 @@ ParserException(index::Integer, kind::Errors.Err) = ParserException(kind, index,
 Base.propertynames(x::ParserException) = (:kind, :line)
 
 function Base.getproperty(x::ParserException, s::Symbol)
-    if s ∈ (:kind, :line)
+    return if s ∈ (:kind, :line)
         getfield(x, s)
     else
         throw(ArgumentError(lazy"No such property in ParserException: $s"))
@@ -391,13 +391,13 @@ function Base.showerror(io::IO, err::ParserException)
         "Query or target start or end position is longer than query/target length"
     end
     print(buf, s)
-    print(io, String(take!(buf)))
+    return print(io, String(take!(buf)))
 end
 
 # Use this macro to return early and reduce code duplication.
 # It's similar to `a = @something b return nothing`
 macro var"?"(expr)
-    quote
+    return quote
         local res = $(esc(expr))
         res isa ParserException ? (return res) : res
     end
@@ -429,13 +429,13 @@ try_parse(x::ImmutableMemoryView{UInt8}) = parse_line!(PAFRecord(length(x) - 19)
 
 function Base.parse(::Type{PAFRecord}, s::Union{String, SubString{String}})
     y = try_parse(s)
-    y isa PAFRecord ? y : throw(y)
+    return y isa PAFRecord ? y : throw(y)
 end
 
 function parse_line!(
-    record::PAFRecord,
-    mem::ImmutableMemoryView{UInt8},
-)::Union{PAFRecord, ParserException}
+        record::PAFRecord,
+        mem::ImmutableMemoryView{UInt8},
+    )::Union{PAFRecord, ParserException}
     if lastindex(mem) > typemax(Int32)
         error("PairwiseMappingFormat.jl can't handle lines longer than 2147483647 bytes")
     end
@@ -463,7 +463,7 @@ function parse_line!(
         return ParserException(i % Int32, Errors.InvalidStrand)
     end
     @inbounds mem[i + 1] == UInt8('\t') ||
-              return ParserException((i + 1) % Int32, Errors.TooFewFields)
+        return ParserException((i + 1) % Int32, Errors.TooFewFields)
 
     # Load rest of the fields
     (tname, i) = @? parse_str(mem, i + 2) # i + 2 because strand plus tab took two bytes
@@ -512,19 +512,19 @@ function parse_line!(
     record.mapq = mapq
     record.strand = strand
 
-    record
+    return record
 end
 
 # If the record is unmapped we don't even bother reading
 # the rest of the fields, so take this fast path
 # i is the byte index of the strand plus two
 function finish_unmapped!(
-    record::PAFRecord,
-    mem::ImmutableMemoryView{UInt8},
-    qname::UnitRange{Int},
-    qlen::Int32,
-    i::Int,
-)
+        record::PAFRecord,
+        mem::ImmutableMemoryView{UInt8},
+        qname::UnitRange{Int},
+        qlen::Int32,
+        i::Int,
+    )
     # Determine the position of aux data
     for _ in 1:6
         i = findnext(==(UInt8('\t')), mem, i)
@@ -561,16 +561,16 @@ function finish_unmapped!(
     record.mapq = 0xff
     record.strand = 0x00
 
-    record
+    return record
 end
 
 # Just get the index of the next \t
 function parse_str(
-    v::ImmutableMemoryView{UInt8},
-    from::Int,
-)::Union{Tuple{UnitRange{Int}, Int}, ParserException}
+        v::ImmutableMemoryView{UInt8},
+        from::Int,
+    )::Union{Tuple{UnitRange{Int}, Int}, ParserException}
     i = findnext(==(UInt8('\t')), v, from)
-    if isnothing(i)
+    return if isnothing(i)
         ParserException(lastindex(v) % Int32, Errors.TooFewFields)
     else
         (from:(i - 1), i + 1)
@@ -579,11 +579,11 @@ end
 
 # TODO: 40% of runtime is spent in this function. Microoptimize it
 function parse_int(
-    v::ImmutableMemoryView{UInt8},
-    from::Int,
-    allow_zero::Bool,
-    at_end::Bool=false,
-)::Union{Tuple{Int32, Int}, ParserException}
+        v::ImmutableMemoryView{UInt8},
+        from::Int,
+        allow_zero::Bool,
+        at_end::Bool = false,
+    )::Union{Tuple{Int32, Int}, ParserException}
     n = Int32(0)
     i = from
     for outer i in from:lastindex(v)
@@ -604,7 +604,7 @@ function parse_int(
     # if they do not end with a \t and thus reach this line, a TooFewFields
     # error will be returned.
     # at_end is if this is the mapq field, which does not need to end with a tab
-    if !at_end
+    return if !at_end
         ParserException(lastindex(v) % Int32, Errors.TooFewFields)
     elseif from > lastindex(v)
         ParserException(i % Int32, Errors.EmptyInteger)
@@ -667,10 +667,10 @@ mutable struct PAFReader{I <: IO}
     copy::Bool
 end
 
-function PAFReader(io::IO; buf_size::Int=2^16, copy::Bool=true)
+function PAFReader(io::IO; buf_size::Int = 2^16, copy::Bool = true)
     mem = Memory{UInt8}(undef, max(buf_size, 16))
     rec = PAFRecord(512)
-    PAFReader{typeof(io)}(io, rec, mem, 1, 0, 1, copy)
+    return PAFReader{typeof(io)}(io, rec, mem, 1, 0, 1, copy)
 end
 
 Base.IteratorSize(::Type{<:PAFReader}) = Base.SizeUnknown()
@@ -679,7 +679,7 @@ Base.close(reader::PAFReader) = close(reader.io) # TODO: Docstring
 
 function PAFReader(f::Function, io::IO; kwargs...)
     reader = PAFReader(io; kwargs...)
-    try
+    return try
         f(reader)
     finally
         close(reader)
@@ -687,7 +687,7 @@ function PAFReader(f::Function, io::IO; kwargs...)
 end
 
 function Base.copy(record::PAFRecord)
-    PAFRecord(
+    return PAFRecord(
         copy(getfield(record, :data)),
         getfield(record, :qname_len),
         getfield(record, :tname_len),
@@ -704,9 +704,9 @@ function Base.copy(record::PAFRecord)
     )
 end
 
-function Base.iterate(reader::PAFReader, (::Nothing)=nothing)
+function Base.iterate(reader::PAFReader, (::Nothing) = nothing)
     res = try_next!(reader)
-    if res isa ParserException
+    return if res isa ParserException
         throw(res)
     elseif res === nothing
         nothing
@@ -727,7 +727,7 @@ function reallocate!(reader::PAFReader)
     new = Memory{UInt8}(undef, newlen)
     unsafe_copyto!(new, 1, mem, 1, reader.filled)
     reader.mem = new
-    reader
+    return reader
 end
 
 # Shift the data inside the buffer such that the usable
@@ -740,7 +740,7 @@ function shift_buffer!(reader::PAFReader)
     copyto!(mem, 1, mem, reader.index, len)
     reader.index = 1
     reader.filled = len
-    reader
+    return reader
 end
 
 # Read data into the buffer. Returns zero if and only if underlying
@@ -752,7 +752,7 @@ function read_buffer!(reader::PAFReader)::Int
     if iszero(remaining)
         shift_buffer!(reader)
         remaining = length(mem) - reader.filled
-        # If still no space, the buffer is truly full, and we need to 
+        # If still no space, the buffer is truly full, and we need to
         # resize it
         if iszero(remaining)
             reallocate!(reader)

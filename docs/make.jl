@@ -8,20 +8,20 @@ meta = quote
     using PairwiseMappingFormat: try_parse
 end
 
-DocMeta.setdocmeta!(PairwiseMappingFormat, :DocTestSetup, meta; recursive=true)
+DocMeta.setdocmeta!(PairwiseMappingFormat, :DocTestSetup, meta; recursive = true)
 
 makedocs(;
-    sitename="PairwiseMappingFormat.jl",
-    modules=[PairwiseMappingFormat],
-    pages=["Home" => "index.md"],
-    authors="Jakob Nybo Nissen",
-    checkdocs=:public,
-    remotes=nothing,
+    sitename = "PairwiseMappingFormat.jl",
+    modules = [PairwiseMappingFormat],
+    pages = ["Home" => "index.md"],
+    authors = "Jakob Nybo Nissen",
+    checkdocs = :public,
+    remotes = nothing,
 )
 
 deploydocs(;
-    repo="github.com/BioJulia/PairwiseMappingFormat.jl.git",
-    push_preview=true,
-    deps=nothing,
-    make=nothing,
+    repo = "github.com/BioJulia/PairwiseMappingFormat.jl.git",
+    push_preview = true,
+    deps = nothing,
+    make = nothing,
 )
