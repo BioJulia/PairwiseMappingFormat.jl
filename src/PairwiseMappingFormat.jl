@@ -25,6 +25,7 @@ end
 using MemoryViews: MemoryView, ImmutableMemoryView
 
 using XAMAuxData.SAM: Auxiliary
+using BufferIO: ExpandReader
 
 """
     PAFRecord(buffer_size::Int)
@@ -62,7 +63,7 @@ The following properties may be used:
 * `matches::Int` gives the number of nucleotides / residues which match
   (i.e. are equal) in the alignment.
 * `alnlen::Int` gives the length of the alignment
-* `mapq::Union{Int, Nothing}` gives the mapping quality, or `nothing` if 
+* `mapq::Union{Int, Nothing}` gives the mapping quality, or `nothing` if
   this information is unavailable.
 * `is_rc::Union{Bool,Nothing}` tells if the query and target strands are reverse-complement
   relative to each other. Is `nothing` if the record is unmapped.
