@@ -7,6 +7,7 @@ using FormatSpecimens
 using MemoryViews
 using Aqua
 
+using XAMAuxData: XAMAuxData
 using XAMAuxData.SAM: AuxTag
 
 function cmp_aux(record::PAFRecord, other)
@@ -15,7 +16,7 @@ function cmp_aux(record::PAFRecord, other)
     @test length(aux) == length(other)
     for ((kaux, vaux), (ko, vo)) in zip(aux, other)
         @test kaux == AuxTag(ko)
-        if vaux isa Union{Real, AbstractString, Char}
+        if vaux isa Union{Real, AbstractString, Char, XAMAuxData.Error}
             @test vaux == vo
         elseif vaux isa AbstractVector
             @test eltype(vaux) == eltype(vo)
@@ -91,7 +92,9 @@ end
     end
     @test rec1.qname == "中国科学院大学"
     @test rec1.qlen == typemax(Int32)
-    cmp_aux(rec1, ["tp" => 'S', "cm" => 29990, "s1" => 301142, "dv" => -13.2442f-18, "rl" => 0, "xX" => [0xea, 0x19, 0xfe, 0x1b], "K1" => Int8[15, 9, 22, 127, -12, -128, 0]])
+    # XAMAuxData 0.2 rejects lowercase hex digits
+    xX = pkgversion(XAMAuxData) < v"0.2" ? [0xea, 0x19, 0xfe, 0x1b] : XAMAuxData.Errors.InvalidHex
+    cmp_aux(rec1, ["tp" => 'S', "cm" => 29990, "s1" => 301142, "dv" => -13.2442f-18, "rl" => 0, "xX" => xX, "K1" => Int8[15, 9, 22, 127, -12, -128, 0]])
     cmp_aux(rec2, ["dv" => 1.243f-4, "rl" => 38, "kk" => "!=[]! And then~~  "])
     cmp_aux(rec3, ["dv" => +17.0f21, "rl" => 38])
 

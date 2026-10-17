@@ -1,9 +1,10 @@
 name = "PairwiseMappingFormat"
 uuid = "30ee2946-b067-41c0-bed2-0900b78dbe59"
-version = "0.1.3"
-authors = ["Jakob Nybo Nissen <jakobnybonissen@gmail.com>"]
+version = "0.2.0"
+authors = ["Jakob Nybo Andersen <jnandersen@proton.me>"]
 
 [deps]
+BufferIO = "ff366017-094f-4144-bd70-a828a0d67152"
 MemoryViews = "a791c907-b98b-4e44-8f4d-e4c2362c6b2f"
 PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 StringViews = "354b36f9-a18e-4713-926e-db85100087ba"
@@ -11,12 +12,13 @@ XAMAuxData = "e99d641e-1821-45d7-9150-ecb7bf333fe1"
 
 [compat]
 Aqua = "0.8.7"
+BufferIO = "0.2.7"
 FormatSpecimens = "1.3"
 MemoryViews = "0.2, 0.3, 0.4, 0.5"
 PrecompileTools = "1.2.1"
-StringViews = "1.3.3"
+StringViews = "2.0.0"
 Test = "1.11"
-XAMAuxData = "0.1"
+XAMAuxData = "0.2"
 julia = "1.11"
 
 [extras]
