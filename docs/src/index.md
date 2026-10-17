@@ -16,14 +16,15 @@ which is a simple tab-delimited format used by e.g. minimap2 and strobealign
 to store records representing pairwise alignment between biological sequences.
 
 ## Reader
-The [`PAFReader`](@ref) type wraps an `IO`, and is an iterator of [`PAFRecord`](@ref) objects:
+The [`PAFReader`](@ref) type wraps an `IO` or a `BufferIO.AbstractBufReader`,
+and is an iterator of [`PAFRecord`](@ref) objects:
 
 ```jldoctest; output = false
 reader = PAFReader(open(path_to_paf))
 records = collect(reader)
+@assert isempty(reader)
 close(reader)
 
-@assert isempty(reader)
 @assert typeof(records) == Vector{PAFRecord}
 
 # output
@@ -47,9 +48,10 @@ julia> PAFReader(open(path_to_paf)) do reader
 
 The [`PAFReader`](@ref) constructor takes an optional keyword `copy`, which defaults to `true`.
 If it is `false`, the record will iterate the _same_ [`PAFRecord`](@ref) object, overwriting
-it in-place.
-This reduces allocations and gives a slight speed increase, but may result in bugs
-if records, or references of records of previous iterations are stored and
+it in-place. This record is a view into the reader's buffer, which is only valid until the
+reader is advanced.
+This reduces allocations and copying and gives a slight speed increase, but may result
+in bugs if records, or references of records of previous iterations are stored and
 unexpectedly overwritten:
 
 ```jldoctest
@@ -265,11 +267,6 @@ julia> aux["km"]
 "some text here"
 
 julia> haskey(aux, "cm")
-true
-
-julia> aux["AB"] = 5.5;
-
-julia> haskey(aux, "AB")
 true
 ```
 

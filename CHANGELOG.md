@@ -12,3 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `length` and `haskey` throw on malformed auxiliary data.
   See the migration guide in the documentation of XAMAuxData.jl.
 - Allow MemoryViews 0.5.
+- **Breaking:** `PAFReader` now reads from a `BufferIO.AbstractBufReader`, and its type
+  parameter is the type of the buffered reader. An `IO` passed to `PAFReader` is
+  wrapped in a `BufferIO.BufReader`, and so becomes `PAFReader{BufReader{T}}`.
+  Reading from an `AbstractBufReader` avoids copying the data into the reader's own buffer.
+- **Breaking:** A `PAFRecord` may now be a view into the memory it was parsed from, instead
+  of owning a copy of the data:
+  - With `copy=false`, the record iterated by `PAFReader` and returned by `try_next!`
+    is a view into the reader's buffer, and is invalidated when the reader is advanced.
+  - `try_parse` and `parse` return a view into the input, so mutating the input
+    also mutates the record.
+  - `copy(record)` returns a record that owns its data.
+- **Breaking:** `aux_data` now returns an immutable `Auxiliary{ImmutableMemoryView{UInt8}}`,
+  so the auxiliary data of records can no longer be modified.
+- **Breaking:** Reading from a closed `PAFReader` now throws, instead of
+  behaving as if the reader is empty.
+
+### Removed
+- **Breaking:** The `PAFRecord(buffer_size::Int)` constructor.
