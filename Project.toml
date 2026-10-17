@@ -1,6 +1,6 @@
 name = "PairwiseMappingFormat"
 uuid = "30ee2946-b067-41c0-bed2-0900b78dbe59"
-version = "0.2.0"
+version = "0.1.2"
 authors = ["Jakob Nybo Andersen <jnandersen@proton.me>"]
 
 [deps]
