@@ -23,6 +23,7 @@ julia = "1.11"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+BufferIO = "ff366017-094f-4144-bd70-a828a0d67152"
 FormatSpecimens = "3372ea36-2a1a-11e9-3eb7-996970b6ffbd"
 MemoryViews = "a791c907-b98b-4e44-8f4d-e4c2362c6b2f"
 StringViews = "354b36f9-a18e-4713-926e-db85100087ba"
@@ -30,4 +31,4 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 XAMAuxData = "e99d641e-1821-45d7-9150-ecb7bf333fe1"
 
 [targets]
-test = ["Test", "FormatSpecimens", "MemoryViews", "StringViews", "XAMAuxData", "Aqua"]
+test = ["Test", "FormatSpecimens", "MemoryViews", "StringViews", "XAMAuxData", "Aqua", "BufferIO"]

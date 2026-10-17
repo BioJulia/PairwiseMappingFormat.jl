@@ -6,6 +6,7 @@ using Test
 using FormatSpecimens
 using MemoryViews
 using Aqua
+using BufferIO: CursorReader
 
 using XAMAuxData: XAMAuxData
 using XAMAuxData.SAM: AuxTag
@@ -194,6 +195,32 @@ end
         @test n == 1000
         @test allgood
     end
+end
+
+@testset "AbstractBufReader" begin
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    other = replace(good, "my_qname" => "other")
+    data = join([good, other, good], '\n')
+
+    # Records iterated with copy=true do not alias the reader's buffer
+    records = PAFReader(collect, CursorReader(data))
+    @test [r.qname for r in records] == ["my_qname", "other", "my_qname"]
+
+    # With copy=false, the record is valid until the reader is advanced
+    PAFReader(CursorReader(data); copy = false) do reader
+        rec = try_next!(reader)
+        @test rec.qname == "my_qname"
+        @test try_next!(reader) === rec
+        @test rec.qname == "other"
+    end
+
+    # Parsing a vector aliases it, but copying the record does not
+    v = collect(codeunits(good))
+    rec = try_parse(v)
+    copied = copy(rec)
+    v[1:2] .= UInt8('X')
+    @test rec.qname == "XX_qname"
+    @test copied.qname == "my_qname"
 end
 
 # We assume that aux data is correctly tested in its own package, here we just test

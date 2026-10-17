@@ -22,16 +22,20 @@ using PrecompileTools: @compile_workload, @setup_workload, @recompile_invalidati
     using StringViews: StringView
 end
 
-using MemoryViews: MemoryView, ImmutableMemoryView
+using MemoryViews: ImmutableMemoryView
 
 using XAMAuxData.SAM: Auxiliary
-using BufferIO: ExpandReader
+using BufferIO: AbstractBufReader, BufReader, ExpandReader, get_buffer, fill_buffer, consume
 
 """
-    PAFRecord(buffer_size::Int)
+    PAFRecord
 
 Mutable type representing a single PAF line. The content of the record
 is accessed through its properties.
+
+A `PAFRecord` does not necessarily own its data, but may be a view into the
+memory it was parsed from, e.g. the buffer of a [`PAFReader`](@ref) with `copy=false`.
+Use `copy` to obtain a record that owns its data.
 
 # Examples
 ```jldoctest
@@ -69,11 +73,13 @@ The following properties may be used:
   relative to each other. Is `nothing` if the record is unmapped.
 """
 mutable struct PAFRecord
-    # Data contains query name, subject name, AUX data,
-    # without delimiters and with no trailing whitespace.
-    const data::Vector{UInt8}
-    qname_len::Int32
-    tname_len::Int32
+    # The line the record was parsed from, without the trailing newline.
+    # May be a view into memory not owned by the record, e.g. a reader's buffer.
+    data::ImmutableMemoryView{UInt8}
+    qname_len::Int32 # query name begins at index 1
+    tname_start::Int32
+    tname_len::Int32 # always zero when unmapped
+    aux_start::Int32 # lastindex(data) + 1 if there is no aux data
     qlen::Int32 # always >= 1
     # Note: qstart/qend (and tstart/tend) are zero-indexed semi-open interval
     # in PAF format, but stored in this struct one-based.
@@ -150,9 +156,9 @@ function Base.propertynames(::PAFRecord)
     )
 end
 
-function PAFRecord(size::Int = 0)
-    data = Vector{UInt8}(undef, max(size, 0))
-    return PAFRecord(data, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0xff, 0x00)
+function PAFRecord()
+    data = ImmutableMemoryView(Memory{UInt8}())
+    return PAFRecord(data, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0xff, 0x00)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", record::PAFRecord)
@@ -188,17 +194,15 @@ end
 
 # Return StringView to not allocate
 function qname(record::PAFRecord)
-    return StringView(
-        ImmutableMemoryView(getfield(record, :data))[1:(getfield(record, :qname_len))],
-    )
+    return StringView(getfield(record, :data)[1:(getfield(record, :qname_len))])
 end
 
 # Return StringView to not allocate
 function tname(record::PAFRecord)::Union{StringView, Nothing}
     return if is_mapped(record)
-        ql = getfield(record, :qname_len)
-        span = (ql + 1):(ql + getfield(record, :tname_len))
-        StringView(ImmutableMemoryView(getfield(record, :data))[span])
+        start = getfield(record, :tname_start)
+        span = start:(start + getfield(record, :tname_len) - 1)
+        StringView(getfield(record, :data)[span])
     else
         nothing
     end
@@ -281,17 +285,12 @@ julia> length(aux)
 julia> aux["cm"]
 29990
 
-julia> aux["k1"] = "add a new aux string like this";
-
 julia> haskey(aux, "k1")
-true
+false
 ```
 """
 function aux_data(record::PAFRecord)
-    return Auxiliary(
-        getfield(record, :data),
-        getfield(record, :qname_len) + getfield(record, :tname_len) + 1,
-    )
+    return Auxiliary(getfield(record, :data)[getfield(record, :aux_start):end])
 end
 
 """
@@ -410,6 +409,11 @@ end
 Try parsing `x` into a `PAFRecord`. `x` may be any type that implements
 `MemoryView`, such as `String` or `Vector{UInt8}`.
 
+!!! warning
+    The resulting record is a view into the memory of `x`, and does not copy it.
+    If `x` is mutated, the record is mutated too, and may become invalid.
+    Use `copy` on the record to obtain a record that owns its data.
+
 # Examples
 ```jldoctest
 julia> valid_line = open(readline, path_to_paf);
@@ -424,9 +428,7 @@ PairwiseMappingFormat.ParserException
 See also: [`PAFRecord`](@ref), [`try_next!`](@ref)
 """
 try_parse(x) = try_parse(ImmutableMemoryView(x))
-# At least 19 bytes of input are stored in the fixed fields, so
-# we need at most 19 fewer bytes in the data field of the vector.
-try_parse(x::ImmutableMemoryView{UInt8}) = parse_line!(PAFRecord(length(x) - 19), x)
+try_parse(x::ImmutableMemoryView{UInt8}) = parse_line!(PAFRecord(), x)
 
 function Base.parse(::Type{PAFRecord}, s::Union{String, SubString{String}})
     y = try_parse(s)
@@ -437,8 +439,9 @@ function parse_line!(
         record::PAFRecord,
         mem::ImmutableMemoryView{UInt8},
     )::Union{PAFRecord, ParserException}
-    if lastindex(mem) > typemax(Int32)
-        error("PairwiseMappingFormat.jl can't handle lines longer than 2147483647 bytes")
+    # Note: The aux data may begin at lastindex(mem) + 1, which must fit in an Int32
+    if lastindex(mem) >= typemax(Int32)
+        error("PairwiseMappingFormat.jl can't handle lines longer than 2147483646 bytes")
     end
     # Read fields incrementally. `i` is the index to read from, beginning at 1.
     # The parse_x functions will return the next index to begin from (after the tab)
@@ -484,24 +487,14 @@ function parse_line!(
         mapq % UInt8
     end
 
-    # Copy data to the .data field - query name, target name, AUX data
-    auxlen = lastindex(mem) - i + 1
-    filled = length(qname) + length(tname) + auxlen
-    data = getfield(record, :data)
-    length(data) == filled || resize!(data, filled)
-    doff = 1
-    dataview = MemoryView(data)
-    unsafe_copyto!(dataview, mem[qname])
-    doff += length(qname)
-    unsafe_copyto!(dataview[doff:end], mem[tname])
-    doff += length(tname)
-    iszero(auxlen) || unsafe_copyto!(dataview[doff:end], mem[i:end])
-
-    # Fill in fields of the struct
+    # Fill in fields of the struct. The aux data begins at `i`.
     # Note: PAF uses zero-based semi-open indexing like e.g. Python,
     # so compensate for that in qstart and qend.
+    record.data = mem
     record.qname_len = length(qname) % Int32
+    record.tname_start = first(tname) % Int32
     record.tname_len = length(tname) % Int32
+    record.aux_start = i % Int32
     record.qlen = qlen
     record.qstart = qstart + one(qstart)
     record.qend = qend
@@ -536,21 +529,14 @@ function finish_unmapped!(
         end
     end
     i = findnext(==(UInt8('\t')), mem, i)
-    aux_end = lastindex(mem)
-    aux_start = isnothing(i) ? aux_end + 1 : i + 1
-    aux = aux_start:aux_end
-
-    # Copy data
-    filled = length(qname) + length(aux)
-    data = getfield(record, :data)
-    dataview = MemoryView(data)
-    length(data) == filled || resize!(data, filled)
-    unsafe_copyto!(dataview, mem[qname])
-    unsafe_copyto!(dataview[(length(qname) + 1):end], mem[aux])
+    aux_start = isnothing(i) ? lastindex(mem) + 1 : i + 1
 
     # Fill in fields
+    record.data = mem
     record.qname_len = length(qname) % Int32
+    record.tname_start = 1
     record.tname_len = 0
+    record.aux_start = aux_start % Int32
     record.qlen = qlen
     record.qstart = 0
     record.qend = 0
@@ -615,21 +601,25 @@ function parse_int(
 end
 
 """
-    PAFReader(io::IO; copy::Bool=true)
+    PAFReader(io::Union{IO, AbstractBufReader}; copy::Bool=true)
 
 Construct a `PAFReader`, an iterator of [`PAFRecord`](@ref) read from `io`.
 Iterating this object returns a `PAFRecord` for each valid line of input,
 and throws a [`ParserException`](@ref) when an invalid record is found.
 For efficiency, the auxiliary fields are not validated until they are accessed.
 
-If `copy` is false, the *same* record will be returned on each iteration,
-with its content being overwritten. This removes a few allocations per iteration,
-but may cause problems if records of old iterations are stored.
+If `io` is an `IO`, it is wrapped in a `BufferIO.BufReader` with a buffer size
+given by the keyword `buf_size`.
+
+If `copy` is false, the *same* record will be returned on each iteration.
+This record is a view into the reader's buffer, and is only valid until the reader is
+advanced. This removes a few allocations and copies per iteration, but iterating the
+reader will overwrite old records.
 
 # Examples
 ```jldoctest
 julia> reader = PAFReader(open(path_to_paf)); typeof(reader)
-PAFReader{IOStream}
+PAFReader{BufferIO.BufReader{IOStream}}
 
 julia> typeof(first(reader))
 PAFRecord
@@ -654,31 +644,31 @@ true
 
 See also: [`PAFRecord`](@ref), [`try_next!`](@ref)
 """
-mutable struct PAFReader{I <: IO}
-    const io::I
+mutable struct PAFReader{I <: AbstractBufReader}
+    const io::ExpandReader{I}
     const record::PAFRecord
-    mem::Memory{UInt8}
-    # Index of first unused byte in buffer. Equal to filled + 1
-    # if the buffer has no usable data.
-    index::Int32
-    # mem[1:filled] contain usable data
-    filled::Int32
+    # Number of bytes of the last parsed line, including its newline, which have not
+    # yet been consumed from `io`. Consuming is deferred to the next call to `try_next!`,
+    # such that the record, which is a view into the buffer of `io`, stays valid.
+    to_consume::Int
     line::Int
     # Whether to iterate copies of the record stored in this struct
     copy::Bool
 end
 
+function PAFReader(io::AbstractBufReader; copy::Bool = true)
+    return PAFReader{typeof(io)}(ExpandReader(io), PAFRecord(), 0, 1, copy)
+end
+
 function PAFReader(io::IO; buf_size::Int = 2^16, copy::Bool = true)
-    mem = Memory{UInt8}(undef, max(buf_size, 16))
-    rec = PAFRecord(512)
-    return PAFReader{typeof(io)}(io, rec, mem, 1, 0, 1, copy)
+    return PAFReader(BufReader(io, max(buf_size, 16)); copy)
 end
 
 Base.IteratorSize(::Type{<:PAFReader}) = Base.SizeUnknown()
 Base.eltype(::Type{<:PAFReader}) = PAFRecord
 Base.close(reader::PAFReader) = close(reader.io) # TODO: Docstring
 
-function PAFReader(f::Function, io::IO; kwargs...)
+function PAFReader(f::Function, io::Union{IO, AbstractBufReader}; kwargs...)
     reader = PAFReader(io; kwargs...)
     return try
         f(reader)
@@ -691,7 +681,9 @@ function Base.copy(record::PAFRecord)
     return PAFRecord(
         copy(getfield(record, :data)),
         getfield(record, :qname_len),
+        getfield(record, :tname_start),
         getfield(record, :tname_len),
+        getfield(record, :aux_start),
         getfield(record, :qlen),
         getfield(record, :qstart),
         getfield(record, :qend),
@@ -717,80 +709,6 @@ function Base.iterate(reader::PAFReader, (::Nothing) = nothing)
     end
 end
 
-# This is never called during normal operations, and only if a single line
-# does not fit in the default buffer, which is highly unlikely.
-function reallocate!(reader::PAFReader)
-    mem = reader.mem
-    newlen = length(mem) * 2
-    if newlen >= typemax(Int32)
-        error("PAFReader encountered a line with more than 2147483646 bytes.")
-    end
-    new = Memory{UInt8}(undef, newlen)
-    unsafe_copyto!(new, 1, mem, 1, reader.filled)
-    reader.mem = new
-    return reader
-end
-
-# Shift the data inside the buffer such that the usable
-# data begins at index 1, thus making room for more
-# data at the end of the buffer
-function shift_buffer!(reader::PAFReader)
-    isone(reader.index) && return reader
-    mem = reader.mem
-    len = reader.filled - reader.index + 1
-    copyto!(mem, 1, mem, reader.index, len)
-    reader.index = 1
-    reader.filled = len
-    return reader
-end
-
-# Read data into the buffer. Returns zero if and only if underlying
-# stream is EOF (or buggy).
-function read_buffer!(reader::PAFReader)::Int
-    mem = reader.mem
-    remaining = length(mem) - reader.filled
-    # If no space, try to shift data in the buffer to make room
-    if iszero(remaining)
-        shift_buffer!(reader)
-        remaining = length(mem) - reader.filled
-        # If still no space, the buffer is truly full, and we need to
-        # resize it
-        if iszero(remaining)
-            reallocate!(reader)
-            mem = reader.mem # it was change in reallocate!
-            remaining = length(mem) - reader.filled
-        end
-    end
-
-    @assert !iszero(remaining)
-    # This part annoys me a lot. Julia has no efficient API to read bytes
-    # into a byte buffer. How on Earth can that be true?
-    # * read! will throw EOF if the memory is too short, and there is no
-    #   way to query how many bytes are available
-    # * readbytes! is not optimised for Memory
-    # * unsafe_read has almost no promised semantics so practically can't be used.
-    # The approach here uses unsafe_read in a manner similar to TranscodingStreams.jl.
-    # It uses bytesavailable to check how many bytes to read and avoid buffer overflows etc,
-    # and when there are zero bytes available, it reads a single byte, hoping that
-    # more bytes will be available.
-    n_available = bytesavailable(reader.io)
-    if iszero(n_available) && !eof(reader.io)
-        # Read one byte and hope more bytes become available
-        byte = read(reader.io, UInt8)
-        @inbounds mem[reader.filled + 1] = byte
-        reader.filled += 1
-        remaining -= 1
-        n_available = bytesavailable(reader.io)
-    end
-    # Read with unsafe_read
-    n_bytes = min(n_available, remaining)
-    if !iszero(n_bytes)
-        GC.@preserve mem unsafe_read(reader.io, pointer(mem, reader.filled + 1), n_bytes)
-        reader.filled += n_bytes
-    end
-    return n_bytes
-end
-
 """
     try_next!(reader::PAFReader) -> Union{Nothing, PAFRecord, ParserException}
 
@@ -802,6 +720,9 @@ Try to read a record from the [`PAFReader`](@ref) and advance the reader. This m
 
 Even if the reader itself is not advanced, it may still fill its internal buffer, advancing
 the `IO` object it wraps.
+
+The returned record is the reader's own record, which is a view into the reader's buffer.
+It is overwritten, and its data invalidated, by the next call to `try_next!`.
 
 # Examples
 ```jldoctest
@@ -826,49 +747,43 @@ true
 ```
 """
 function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
-    # n_scanned: The number of bytes in buffer we have already memchrd searching for a newline
-    n_scanned = 0
-    newline = findfirst(
-        ==(0x0a),
-        ImmutableMemoryView(reader.mem)[(reader.index + n_scanned):(reader.filled % Int)],
-    )
-    n_bytes_read = 0
+    io = reader.io
+    # Consume the previous line, now that the previous record is invalidated.
+    if !iszero(reader.to_consume)
+        consume(io, reader.to_consume)
+        reader.to_consume = 0
+    end
+    buffer = get_buffer(io)
+    newline = findfirst(==(0x0a), buffer)
     # Keep reading until we find a newline or reach EOF
     while newline === nothing
-        n_scanned += reader.filled - reader.index - n_scanned + 1
-        n_bytes_read = read_buffer!(reader)
+        # The number of bytes in buffer we have already memchrd searching for a newline
+        n_scanned = length(buffer)
         # This signals EOF - we might still have data in the buffer, if the underlying stream
         # ends with a record that doesn't end in a newline
-        iszero(n_bytes_read) && break
-        newline = findfirst(
-            ==(0x0a),
-            ImmutableMemoryView(reader.mem)[(reader.index + n_scanned):(reader.filled % Int)],
-        )
+        iszero(fill_buffer(io)) && break
+        buffer = get_buffer(io)
+        newline = findnext(==(0x0a), buffer, n_scanned + 1)
     end
-    # If a newline was found, the current value of newline was relative to where
-    # the last search began. So, update it to account for the bytes searched in
-    # previous iterations of search for tab
-    newline === nothing || (newline += reader.index + n_scanned - 1)
-    mem = reader.mem
     has_windows_newline = false
     # Last index before \n, and before \r if the newline is \r\n as on Windows
     last_index = if newline === nothing
-        reader.filled
+        length(buffer)
     else
         if isone(newline)
             0
         else
-            has_windows_newline = @inbounds(mem[newline - 1]) == UInt8('\r')
+            has_windows_newline = @inbounds(buffer[newline - 1]) == UInt8('\r')
             newline - (1 + has_windows_newline)
         end
     end
-    parse_mem = ImmutableMemoryView(mem)[reader.index:last_index]
+    parse_mem = buffer[1:last_index]
     # If there is no memory to parse (and we have already verified that
     # there are no more bytes in the IO), we end
     if isempty(parse_mem)
         line = reader.line
         col = 0
-        @inbounds for b in ImmutableMemoryView(mem)[reader.index:reader.filled]
+        @inbounds for b in buffer
             col += 1
             line += b == UInt8('\n')
             col *= b != UInt8('\n')
@@ -884,9 +799,9 @@ function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException
         return ParserException(res.kind, getfield(res, :index_in_line), reader.line)
     # Else, we update the reader. This means `next!` will continuously return
     # an error if an error is found.
-    # If the newline was found, we compensate for the newline by skipping that byte in
-    # the next iteration, hence the extra `newline !== nothing`.
-    reader.index = last_index + 1 + has_windows_newline + (newline !== nothing)
+    # If the newline was found, we compensate for the newline by also consuming that byte,
+    # hence the extra `newline !== nothing`.
+    reader.to_consume = last_index + has_windows_newline + (newline !== nothing)
     reader.line += 1
     return res
 end
