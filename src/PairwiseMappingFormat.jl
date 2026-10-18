@@ -320,6 +320,7 @@ module Errors
         EmptyInteger
         InvalidZero
         PositionOutOfBounds
+        LineTooLong
     end
 end # module Errors
 
@@ -389,6 +390,8 @@ function Base.showerror(io::IO, err::ParserException)
         "Parsed an integer to zero which cannot meaningfully be zero"
     elseif kind == Errors.PositionOutOfBounds
         "Query or target start or end position is longer than query/target length"
+    elseif kind == Errors.LineTooLong
+        "Line is too long. PairwiseMappingFormat.jl can't handle lines of 2147483647 bytes or longer"
     end
     print(buf, s)
     return print(io, String(take!(buf)))
@@ -440,15 +443,19 @@ function parse_line!(
         mem::ImmutableMemoryView{UInt8},
     )::Union{PAFRecord, ParserException}
     # Note: The aux data may begin at lastindex(mem) + 1, which must fit in an Int32
-    if lastindex(mem) >= typemax(Int32)
-        error("PairwiseMappingFormat.jl can't handle lines longer than 2147483646 bytes")
-    end
+    lastindex(mem) >= typemax(Int32) &&
+        return ParserException(typemax(Int32), Errors.LineTooLong)
     # Read fields incrementally. `i` is the index to read from, beginning at 1.
     # The parse_x functions will return the next index to begin from (after the tab)
     (qname, i) = @? parse_str(mem, 1)
     (qlen, i) = @? parse_int(mem, i, false)
     (qstart, i) = @? parse_int(mem, i, true)
-    (qend, i) = @? parse_int(mem, i, false)
+    # qend may only be zero for unmapped records, e.g. minimap2's `--paf-no-hit`
+    # lines, so peek at the strand to check that before parsing it below.
+    (qend, i) = @? parse_int(mem, i, true)
+    if iszero(qend) && (i > lastindex(mem) || @inbounds(mem[i]) != UInt8('*'))
+        return ParserException((i - 1) % Int32, Errors.InvalidZero)
+    end
     qend ≥ qstart || return ParserException(i % Int32, Errors.BackwardsIndices)
     qend > qlen && return ParserException(i % Int32, Errors.PositionOutOfBounds)
 
@@ -571,7 +578,9 @@ function parse_int(
         allow_zero::Bool,
         at_end::Bool = false,
     )::Union{Tuple{Int32, Int}, ParserException}
-    n = Int32(0)
+    # Accumulate in an Int, which can't overflow because we check against
+    # typemax(Int32) after every digit.
+    n = 0
     i = from
     for outer i in from:lastindex(v)
         b = @inbounds v[i]
@@ -580,11 +589,11 @@ function parse_int(
             i == from && return ParserException(i % Int32, Errors.EmptyInteger)
             (!allow_zero & iszero(n)) &&
                 return ParserException(i % Int32, Errors.InvalidZero)
-            return (n, i + 1)
+            return (n % Int32, i + 1)
         end
         b ∈ 0x30:0x39 || return ParserException(i % Int32, Errors.BadInteger)
-        n < 0 && return ParserException(i % Int32, Errors.IntegerOverflow)
-        n = Int32(10) * n + (b - Int32(48))
+        n = 10 * n + (b - 0x30)
+        n > typemax(Int32) && return ParserException(i % Int32, Errors.IntegerOverflow)
     end
     # Note: It is not possible to get an InvalidZero error here, because
     # the last field (mapq) does allow zero, and for any other fields,
@@ -596,7 +605,7 @@ function parse_int(
     elseif from > lastindex(v)
         ParserException(i % Int32, Errors.EmptyInteger)
     else
-        (n, i + 1)
+        (n % Int32, i + 1)
     end
 end
 
@@ -780,18 +789,25 @@ function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException
     parse_mem = buffer[1:last_index]
     # If there is no memory to parse (and we have already verified that
     # there are no more bytes in the IO), we end
+    # This is only the end of the file if the rest of the stream is whitespace.
+    # The buffer may end after the empty line, so keep filling it until EOF.
     if isempty(parse_mem)
         line = reader.line
         col = 0
-        @inbounds for b in buffer
-            col += 1
-            line += b == UInt8('\n')
-            col *= b != UInt8('\n')
-            if b ∉ (UInt8('\r'), UInt8('\n'), UInt8('\t'), UInt8(' '))
-                return ParserException(Errors.EmptyNonTailingLine, col % Int32, line)
+        n_scanned = 0
+        while true
+            @inbounds for b in buffer[(n_scanned + 1):end]
+                col += 1
+                line += b == UInt8('\n')
+                col *= b != UInt8('\n')
+                if b ∉ (UInt8('\r'), UInt8('\n'), UInt8('\t'), UInt8(' '))
+                    return ParserException(Errors.EmptyNonTailingLine, col % Int32, line)
+                end
             end
+            n_scanned = length(buffer)
+            iszero(fill_buffer(io)) && return nothing
+            buffer = get_buffer(io)
         end
-        return nothing
     end
     # If this results in an error, we return the error.
     res = parse_line!(reader.record, parse_mem)
