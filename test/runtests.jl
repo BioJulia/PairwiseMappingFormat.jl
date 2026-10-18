@@ -63,6 +63,10 @@ end
         @test rec1.alnlen == 301142
         @test rec1.mapq == 0
 
+        # tname and is_rc are type stable, since they throw for unmapped records
+        @test (@inferred (r -> r.tname)(rec1)) isa AbstractString
+        @test (@inferred (r -> r.is_rc)(rec1)) isa Bool
+
         @test_throws Exception rec1.foobar
         @test_throws Exception rec1.strand
         @test_throws Exception rec1.data
@@ -118,9 +122,13 @@ end
 
     # Empty record
     rec = PAFReader(first, open(joinpath(path_of_format("PAF"), "good3.paf")))
-    @test isnothing(rec.tname)
-    @test isnothing(rec.is_rc)
     @test !is_mapped(rec)
+    for sym in (:tname, :is_rc, :mapq, :qstart, :qend, :tlen, :tstart, :tend, :matches, :alnlen)
+        @test_throws PairwiseMappingFormat.UnmappedError(sym) getproperty(rec, sym)
+    end
+    for f in (query_coverage, target_coverage, aln_identity)
+        @test_throws PairwiseMappingFormat.UnmappedError(Symbol(f)) f(rec)
+    end
     @test rec.qname == "query"
     @test rec.qlen == 56
     @test Dict(aux_data(rec)) == Dict{AuxTag, Any}(

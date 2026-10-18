@@ -9,7 +9,7 @@ export PAFReader,
     PAFRecord, aln_identity, aux_data, try_next!, query_coverage, target_coverage, is_mapped
 
 # Not exported, because this very PAF-specific, and operates on foreign types.
-public try_parse, ParserException, Errors, Err
+public try_parse, ParserException, UnmappedError, Errors, Err
 
 using PrecompileTools: @compile_workload, @setup_workload, @recompile_invalidations
 
@@ -51,11 +51,12 @@ julia> record.qlen
 See also: [`PAFReader`](@ref)
 
 # Extended help
-The following properties may be used:
+The following properties may be used. For unmapped records, only `qname` and `qlen`
+are available, and accessing any other property throws an [`UnmappedError`](@ref).
+Use [`is_mapped`](@ref) to check if a record is mapped.
 * `qname::StringView`. The query name, May be empty, and contain any bytes
   except `\\t` and `\\n`.
-* `tname::Union{StringView, Nothing}`. Target name. Like `qname`, but is `nothing`
-  if and only if the record is unmapped.
+* `tname::StringView`. Target name. Like `qname`.
 * `qlen` and `tlen::Int`, and gives the length of the query and target
   sequences, respectively. This must be > 0.
 * `qstart`, `qend`, `tstart` and `tend::Int`, and give the starting and
@@ -69,8 +70,8 @@ The following properties may be used:
 * `alnlen::Int` gives the length of the alignment
 * `mapq::Union{Int, Nothing}` gives the mapping quality, or `nothing` if
   this information is unavailable.
-* `is_rc::Union{Bool,Nothing}` tells if the query and target strands are reverse-complement
-  relative to each other. Is `nothing` if the record is unmapped.
+* `is_rc::Bool` tells if the query and target strands are reverse-complement
+  relative to each other.
 """
 mutable struct PAFRecord
     # The line the record was parsed from, without the trailing newline.
@@ -83,13 +84,15 @@ mutable struct PAFRecord
     qlen::Int32 # always >= 1
     # Note: qstart/qend (and tstart/tend) are zero-indexed semi-open interval
     # in PAF format, but stored in this struct one-based.
-    qstart::Int32 # always >= 1, except when unmapped
+    # The fields below, and tname, are arbitrary when unmapped, and not accessible
+    # through the properties of the record.
+    qstart::Int32 # always >= 1
     qend::Int32 # always >= qstart
-    tlen::Int32 # always >= 1, except when unmapped
-    tstart::Int32 # always >= 1, except when unmapped
+    tlen::Int32 # always >= 1
+    tstart::Int32 # always >= 1
     tend::Int32 # always >= tstart
     matches::Int32
-    alnlen::Int32 # always >= 1, except when unmapped
+    alnlen::Int32 # always >= 1
     mapq::UInt8 # stored as 0xff for missing
     strand::UInt8 # 0x00: *, 0x01: -, 0x02: +
     # 16 bits of padding, which we can use for something else later
@@ -97,16 +100,24 @@ end
 
 # Since the interface of the records are defined in terms of its
 # properties, we need to be able to abstract over them
-function Base.getproperty(record::PAFRecord, sym::Symbol)
+# Note: This is inlined so `sym` is constant folded, leaving only the branch for
+# that property, and the cheap check for mapped-ness.
+@inline function Base.getproperty(record::PAFRecord, sym::Symbol)
     return if sym === :qname
         qname(record)
-    elseif sym == :tname
+    elseif sym === :qlen
+        Int(getfield(record, :qlen))
+    elseif sym === :tname
+        check_mapped(record, sym)
         tname(record)
-    elseif sym == :mapq
+    elseif sym === :mapq
+        check_mapped(record, sym)
         mapq(record)
-    elseif sym in (:qlen, :qstart, :qend, :tlen, :tstart, :tend, :matches, :alnlen)
+    elseif sym in (:qstart, :qend, :tlen, :tstart, :tend, :matches, :alnlen)
+        check_mapped(record, sym)
         Int(getfield(record, sym))
-    elseif sym == :is_rc
+    elseif sym === :is_rc
+        check_mapped(record, sym)
         is_rc(record)
     else
         error(lazy"Type PAFRecord has no property $sym")
@@ -116,27 +127,67 @@ end
 """
     is_mapped(x::PAFRecord) -> Bool
 
-Compute whether the `PAFRecord` is mapped. An unmapped record will have
-the properties `is_rc` and `tname` unavailable.
-The properties `qname` and `qlen`, and the auxiliary data of an unmapped record
-can be relied on, but the remaining properties contain arbitrary data.
+Compute whether the `PAFRecord` is mapped.
+Only the properties `qname` and `qlen`, and the auxiliary data of an unmapped record
+are available. Accessing any other property of an unmapped record, or calling
+[`query_coverage`](@ref), [`target_coverage`](@ref) or [`aln_identity`](@ref) on it,
+throws an [`UnmappedError`](@ref).
 Note that some PAF parsers do not handle unmapped records correctly, so be
 wary when writing unmapped records.
 
 # Examples
-```jldoctes
+```jldoctest
 julia> is_mapped(record)
 true
+
+julia> unmapped = parse(PAFRecord, "read1\\t1523\\t0\\t0\\t*\\t*\\t0\\t0\\t0\\t0\\t0\\t0");
+
+julia> is_mapped(unmapped)
+false
 ```
 
 See also: [`PAFRecord`](@ref)
 """
 is_mapped(x::PAFRecord) = !iszero(getfield(x, :strand))
 
-function is_rc(record::PAFRecord)::Union{Bool, Nothing}
-    x = getfield(record, :strand)
-    return iszero(x) ? nothing : x == 0x02
+"""
+    UnmappedError
+
+The exception thrown when accessing a property of an unmapped [`PAFRecord`](@ref) which
+only exists for mapped records, such as `tname`, or when calling a function which
+requires a mapped record, such as [`query_coverage`](@ref).
+The name of the property or function may be accessed with the `.name` field.
+
+# Examples
+```jldoctest
+julia> unmapped = parse(PAFRecord, "read1\\t1523\\t0\\t0\\t*\\t*\\t0\\t0\\t0\\t0\\t0\\t0");
+
+julia> err = try unmapped.tname catch e e end;
+
+julia> err isa PAF.UnmappedError
+true
+
+julia> err.name
+:tname
+```
+
+See also: [`is_mapped`](@ref)
+"""
+struct UnmappedError <: Exception
+    name::Symbol
 end
+
+function Base.showerror(io::IO, err::UnmappedError)
+    return print(io, "UnmappedError: Cannot get `", err.name, "` of an unmapped PAFRecord. Check `is_mapped` first.")
+end
+
+# Keep the error path out of line, so the check is cheap to inline
+@noinline throw_unmapped(name::Symbol) = throw(UnmappedError(name))
+
+check_mapped(record::PAFRecord, name::Symbol) = (is_mapped(record) || throw_unmapped(name); nothing)
+
+# Note: The functions below do not check if the record is mapped.
+is_rc(record::PAFRecord) = getfield(record, :strand) == 0x02
 
 # For tab completion
 function Base.propertynames(::PAFRecord)
@@ -198,14 +249,10 @@ function qname(record::PAFRecord)
 end
 
 # Return StringView to not allocate
-function tname(record::PAFRecord)::Union{StringView, Nothing}
-    return if is_mapped(record)
-        start = getfield(record, :tname_start)
-        span = start:(start + getfield(record, :tname_len) - 1)
-        StringView(getfield(record, :data)[span])
-    else
-        nothing
-    end
+function tname(record::PAFRecord)
+    start = getfield(record, :tname_start)
+    span = start:(start + getfield(record, :tname_len) - 1)
+    return StringView(getfield(record, :data)[span])
 end
 
 # Note: We return nothing instead of missing because fuck missing
@@ -220,6 +267,7 @@ end
 Return the nucleotide / residue identity, defined as the number of
 matches divided by the alignment length.
 This is a number between 0 and 1.
+Throws an [`UnmappedError`](@ref) if the record is unmapped.
 
 # Examples
 ```jldoctest
@@ -230,6 +278,7 @@ julia> aln_identity(record)
 See also: [`query_coverage`](@ref), [`target_coverage`](@ref)
 """
 function aln_identity(record::PAFRecord)::Float64
+    check_mapped(record, :aln_identity)
     return record.matches / record.alnlen
 end
 
@@ -237,6 +286,7 @@ end
     query_coverage(rec::Record) -> Float64
 
 Compute the fraction of the query covered by the alignment.
+Throws an [`UnmappedError`](@ref) if the record is unmapped.
 
 # Examples
 ```jldoctest
@@ -247,6 +297,7 @@ julia> query_coverage(record)
 See also: [`target_coverage`](@ref), [`aln_identity`](@ref)
 """
 function query_coverage(record::PAFRecord)::Float64
+    check_mapped(record, :query_coverage)
     return (record.qend - record.qstart + Int32(1)) / record.qlen
 end
 
@@ -254,6 +305,7 @@ end
     target_coverage(rec::Record) -> Float64
 
 Compute the fraction of the target covered by the alignment.
+Throws an [`UnmappedError`](@ref) if the record is unmapped.
 
 # Examples
 ```jldoctest
@@ -264,6 +316,7 @@ julia> target_coverage(record)
 See also: [`query_coverage`](@ref), [`aln_identity`](@ref)
 """
 function target_coverage(record::PAFRecord)::Float64
+    check_mapped(record, :target_coverage)
     return (record.tend - record.tstart + Int32(1)) / record.tlen
 end
 

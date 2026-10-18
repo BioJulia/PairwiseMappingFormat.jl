@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the auxiliary data of records can no longer be modified.
 - **Breaking:** Reading from a closed `PAFReader` now throws, instead of
   behaving as if the reader is empty.
+- **Breaking:** Accessing any property other than `qname` and `qlen` of an unmapped
+  record now throws the new exception `PairwiseMappingFormat.UnmappedError`, as does calling `query_coverage`, `target_coverage`
+  or `aln_identity` on it. Previously, `tname` and `is_rc` returned `nothing`, and the
+  remaining properties returned arbitrary values. As a result, `tname` is now always
+  a `StringView`, and `is_rc` always a `Bool`.
 
 ### Removed
 - **Breaking:** The `PAFRecord(buffer_size::Int)` constructor.
