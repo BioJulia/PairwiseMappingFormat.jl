@@ -89,8 +89,8 @@ underlying fields as they are stored in the `PAFRecord`.
   Names of the query sequences
   When the sequences are from a FASTA file, this is typically the _identifier_ of the
   FASTA records, i.e. the part of the header before the first space.
-* `tname::Union{Nothing, StringView{A}}`. Same as `qname`, but for the target (i.e. subject)
-  sequence. May be `nothing` if the record is unmapped.
+* `tname::StringView{A}`. Same as `qname`, but for the target (i.e. subject)
+  sequence.
 * `qlen` and `tlen`. Of type `Int`. Length of the full query and target sequence.
 * `qstart` and `tstart`. Of type `Int`. Leftmost (i.e. lowest) position of the alignment
   in the query and target, respectively. This does not take strandedness into account.
@@ -104,7 +104,7 @@ underlying fields as they are stored in the `PAFRecord`.
 * `mapq::Union{Int, Nothing}`. Mapping quality, from 0:254, where 254 is the better quality.
   When calibrated, the probability the mapping is correct should be 10^(-mapq / 10).
   A value of `nothing` indicates the mapping quality is unavailable.
-* `is_rc::Union{Bool, Nothing}` indicates whether the alignment matches the target on the forward (`false`) or reverse-complement `true` strand. A missing alignment is `nothing`.
+* `is_rc::Bool` indicates whether the alignment matches the target on the forward (`false`) or reverse-complement `true` strand.
 
 The PAF format does not contain fields for alignment identity, query coverage
 or target coverage.
@@ -124,41 +124,34 @@ record = parse(PAFRecord, data)
 
 ```
 
-Rarely, PAF records are unmapped. An unmapped record contain the query id, the query length, and any [auxiliary fields](@ref aux).
-The target name and the strand of an unmapped return is `nothing`.
-You can check if a record is mapped or unmapped with the function `is_mapped`:
+Some PAF records are unmapped, for example those written by minimap2 with the
+`--paf-no-hit` flag. An unmapped record only contains the query name, the query length,
+and any [auxiliary fields](@ref aux).
+You can check if a record is mapped or unmapped with the function [`is_mapped`](@ref):
 
 ```jldoctest unmapped
-julia> unmapped = parse(PAFRecord, "myquery\t5032251\t9\t11\t*\t*\t5\t2\t1\t7\t4\t0");
+julia> unmapped = parse(PAFRecord, "myquery\t5032251\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0");
 
-julia> @assert !is_mapped(unmapped)
+julia> is_mapped(unmapped)
+false
 
 julia> println(unmapped.qname)
 myquery
 
 julia> println(unmapped.qlen)
 5032251
-
-julia> @assert isnothing(unmapped.tname)
-
-julia> # The strand is given by is_rc, and is nothing for unmapped records
-       @assert isnothing(unmapped.is_rc)
 ```
 
-All other properties of unmapped records may contain arbitrary data, and should not be relied on.
-For this reason, the functions [`target_coverage`](@ref), [`query_coverage`](@ref) and [`aln_identity`](@ref)
-may give nonsense answers for unmapped records:
+Accessing any other property of an unmapped record throws a [`PairwiseMappingFormat.UnmappedError`](@ref),
+as does calling [`target_coverage`](@ref), [`query_coverage`](@ref) or [`aln_identity`](@ref) on it:
 ```jldoctest unmapped
-julia> # Note! These results are arbitrary and not guaranteed to be stable
-       # across minor releases of this package
-       println(target_coverage(unmapped))
-Inf
+julia> unmapped.tname
+ERROR: UnmappedError: Cannot get `tname` of an unmapped PAFRecord. Check `is_mapped` first.
+[...]
 
-julia> println(query_coverage(unmapped))
-1.9871822768776836e-7
-
-julia> println(aln_identity(unmapped))
-NaN
+julia> query_coverage(unmapped)
+ERROR: UnmappedError: Cannot get `query_coverage` of an unmapped PAFRecord. Check `is_mapped` first.
+[...]
 ```
 
 ## Low-level interface
@@ -292,4 +285,5 @@ is_mapped
 PairwiseMappingFormat.Errors
 PairwiseMappingFormat.try_parse
 PairwiseMappingFormat.ParserException
+PairwiseMappingFormat.UnmappedError
 ```
