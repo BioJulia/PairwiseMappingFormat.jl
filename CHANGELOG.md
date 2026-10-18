@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or `aln_identity` on it. Previously, `tname` and `is_rc` returned `nothing`, and the
   remaining properties returned arbitrary values. As a result, `tname` is now always
   a `StringView`, and `is_rc` always a `Bool`.
+- Sequence lengths and positions up to `typemax(UInt32)` (about 4.3 Gbp) are now supported,
+  up from `typemax(Int32)`. Larger integers are rejected with `IntegerOverflow`.
 
 ### Removed
 - **Breaking:** The `PAFRecord(buffer_size::Int)` constructor.

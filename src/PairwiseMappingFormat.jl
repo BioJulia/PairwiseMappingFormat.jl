@@ -58,7 +58,7 @@ Use [`is_mapped`](@ref) to check if a record is mapped.
   except `\\t` and `\\n`.
 * `tname::StringView`. Target name. Like `qname`.
 * `qlen` and `tlen::Int`, and gives the length of the query and target
-  sequences, respectively. This must be > 0.
+  sequences, respectively. This must be > 0, and at most `typemax(UInt32)` (about 4.3 Gbp).
 * `qstart`, `qend`, `tstart` and `tend::Int`, and give the starting and
   ending positions of the alignments on the query and target strand.
   These uses one-based, closed interval indexing as usual in Julia, but unlike
@@ -81,18 +81,21 @@ mutable struct PAFRecord
     tname_start::Int32
     tname_len::Int32 # always zero when unmapped
     aux_start::Int32 # lastindex(data) + 1 if there is no aux data
-    qlen::Int32 # always >= 1
-    # Note: qstart/qend (and tstart/tend) are zero-indexed semi-open interval
-    # in PAF format, but stored in this struct one-based.
+    # Positions and lengths are stored as UInt32, so sequences of up to
+    # typemax(UInt32) bytes are supported.
+    qlen::UInt32 # always >= 1
+    # Note: qstart/qend (and tstart/tend) are zero-indexed semi-open intervals
+    # in the PAF format, and are stored as such. The properties are one-based.
+    # The start is stored zero-based, such that the conversion can't overflow.
     # The fields below, and tname, are arbitrary when unmapped, and not accessible
     # through the properties of the record.
-    qstart::Int32 # always >= 1
-    qend::Int32 # always >= qstart
-    tlen::Int32 # always >= 1
-    tstart::Int32 # always >= 1
-    tend::Int32 # always >= tstart
-    matches::Int32
-    alnlen::Int32 # always >= 1
+    qstart::UInt32
+    qend::UInt32 # always >= qstart
+    tlen::UInt32 # always >= 1
+    tstart::UInt32
+    tend::UInt32 # always >= tstart
+    matches::UInt32
+    alnlen::UInt32 # always >= 1
     mapq::UInt8 # stored as 0xff for missing
     strand::UInt8 # 0x00: *, 0x01: -, 0x02: +
     # 16 bits of padding, which we can use for something else later
@@ -113,7 +116,10 @@ end
     elseif sym === :mapq
         check_mapped(record, sym)
         mapq(record)
-    elseif sym in (:qstart, :qend, :tlen, :tstart, :tend, :matches, :alnlen)
+    elseif sym in (:qstart, :tstart)
+        check_mapped(record, sym)
+        Int(getfield(record, sym)) + 1
+    elseif sym in (:qend, :tlen, :tend, :matches, :alnlen)
         check_mapped(record, sym)
         Int(getfield(record, sym))
     elseif sym === :is_rc
@@ -209,7 +215,7 @@ end
 
 function PAFRecord()
     data = ImmutableMemoryView(Memory{UInt8}())
-    return PAFRecord(data, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0xff, 0x00)
+    return PAFRecord(data, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0xff, 0x00)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", record::PAFRecord)
@@ -298,7 +304,7 @@ See also: [`target_coverage`](@ref), [`aln_identity`](@ref)
 """
 function query_coverage(record::PAFRecord)::Float64
     check_mapped(record, :query_coverage)
-    return (record.qend - record.qstart + Int32(1)) / record.qlen
+    return (record.qend - record.qstart + 1) / record.qlen
 end
 
 """
@@ -317,7 +323,7 @@ See also: [`query_coverage`](@ref), [`aln_identity`](@ref)
 """
 function target_coverage(record::PAFRecord)::Float64
     check_mapped(record, :target_coverage)
-    return (record.tend - record.tstart + Int32(1)) / record.tlen
+    return (record.tend - record.tstart + 1) / record.tlen
 end
 
 """
@@ -548,21 +554,20 @@ function parse_line!(
     end
 
     # Fill in fields of the struct. The aux data begins at `i`.
-    # Note: PAF uses zero-based semi-open indexing like e.g. Python,
-    # so compensate for that in qstart and qend.
+    # The integers have been checked to fit in an UInt32 by `parse_int`.
     record.data = mem
     record.qname_len = length(qname) % Int32
     record.tname_start = first(tname) % Int32
     record.tname_len = length(tname) % Int32
     record.aux_start = i % Int32
-    record.qlen = qlen
-    record.qstart = qstart + one(qstart)
-    record.qend = qend
-    record.tlen = tlen
-    record.tstart = tstart + one(tstart)
-    record.tend = tend
-    record.matches = matches
-    record.alnlen = alnlen
+    record.qlen = qlen % UInt32
+    record.qstart = qstart % UInt32
+    record.qend = qend % UInt32
+    record.tlen = tlen % UInt32
+    record.tstart = tstart % UInt32
+    record.tend = tend % UInt32
+    record.matches = matches % UInt32
+    record.alnlen = alnlen % UInt32
     record.mapq = mapq
     record.strand = strand
 
@@ -576,7 +581,7 @@ function finish_unmapped!(
         record::PAFRecord,
         mem::ImmutableMemoryView{UInt8},
         qname::UnitRange{Int},
-        qlen::Int32,
+        qlen::Int,
         i::Int,
     )
     # Determine the position of aux data
@@ -597,7 +602,7 @@ function finish_unmapped!(
     record.tname_start = 1
     record.tname_len = 0
     record.aux_start = aux_start % Int32
-    record.qlen = qlen
+    record.qlen = qlen % UInt32
     record.qstart = 0
     record.qend = 0
     record.tlen = 0
@@ -630,9 +635,9 @@ function parse_int(
         from::Int,
         allow_zero::Bool,
         at_end::Bool = false,
-    )::Union{Tuple{Int32, Int}, ParserException}
+    )::Union{Tuple{Int, Int}, ParserException}
     # Accumulate in an Int, which can't overflow because we check against
-    # typemax(Int32) after every digit.
+    # typemax(UInt32) after every digit. The result therefore fits in an UInt32.
     n = 0
     i = from
     for outer i in from:lastindex(v)
@@ -642,11 +647,11 @@ function parse_int(
             i == from && return ParserException(i % Int32, Errors.EmptyInteger)
             (!allow_zero & iszero(n)) &&
                 return ParserException(i % Int32, Errors.InvalidZero)
-            return (n % Int32, i + 1)
+            return (n, i + 1)
         end
         b ∈ 0x30:0x39 || return ParserException(i % Int32, Errors.BadInteger)
         n = 10 * n + (b - 0x30)
-        n > typemax(Int32) && return ParserException(i % Int32, Errors.IntegerOverflow)
+        n > typemax(UInt32) && return ParserException(i % Int32, Errors.IntegerOverflow)
     end
     # Note: It is not possible to get an InvalidZero error here, because
     # the last field (mapq) does allow zero, and for any other fields,
@@ -658,7 +663,7 @@ function parse_int(
     elseif from > lastindex(v)
         ParserException(i % Int32, Errors.EmptyInteger)
     else
-        (n % Int32, i + 1)
+        (n, i + 1)
     end
 end
 

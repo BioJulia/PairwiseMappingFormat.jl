@@ -203,11 +203,24 @@ end
     @test with_replaced(good, 12, "256") == Errors.IntegerOverflow
 
     # Integer overflow, including on the last digit
-    @test with_replaced(good, 10, "2147483647").matches == typemax(Int32)
-    @test with_replaced(good, 10, "2147483648") == Errors.IntegerOverflow
+    @test with_replaced(good, 10, "4294967295").matches == typemax(UInt32)
+    @test with_replaced(good, 10, "4294967296") == Errors.IntegerOverflow
     @test with_replaced(good, 10, "9999999999") == Errors.IntegerOverflow
+    @test with_replaced(good, 10, "99999999999999999999") == Errors.IntegerOverflow
     @test with_replaced(good, 12, "4294967296") == Errors.IntegerOverflow
-    @test with_replaced(good, 2, "2147483648") == Errors.IntegerOverflow
+    @test with_replaced(good, 2, "4294967296") == Errors.IntegerOverflow
+
+    # Sequences longer than typemax(Int32), up to typemax(UInt32)
+    m = typemax(UInt32)
+    rec = try_parse("q\t$m\t$(m - 1)\t$m\t+\tt\t$m\t0\t$m\t1\t1\t0")
+    @test (rec.qlen, rec.qstart, rec.qend) == (m, m, m)
+    @test (rec.tlen, rec.tstart, rec.tend) == (m, 1, m)
+    @test query_coverage(rec) == 1 / m
+    @test target_coverage(rec) == 1.0
+
+    # Empty interval at the very end of the sequence doesn't overflow
+    rec = try_parse("q\t$m\t$m\t$m\t+\tt\t5\t0\t5\t1\t1\t0")
+    @test (rec.qstart, rec.qend) == (Int(m) + 1, m)
 end
 
 @testset "Bad reader" begin
