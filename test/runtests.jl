@@ -6,7 +6,24 @@ using Test
 using FormatSpecimens
 using MemoryViews
 using Aqua
-using BufferIO: CursorReader
+using BufferIO: CursorReader, AbstractBufReader
+import BufferIO: get_buffer, fill_buffer, consume
+
+# A reader that delivers data in fixed chunks, like a pipe would
+mutable struct ChunkReader <: AbstractBufReader
+    chunks::Vector{Vector{UInt8}}
+    buf::Vector{UInt8}
+end
+ChunkReader(chunks) = ChunkReader(map(c -> collect(codeunits(c)), chunks), UInt8[])
+get_buffer(r::ChunkReader) = ImmutableMemoryView(r.buf)
+function fill_buffer(r::ChunkReader)
+    isempty(r.chunks) && return 0
+    c = popfirst!(r.chunks)
+    append!(r.buf, c)
+    return length(c)
+end
+consume(r::ChunkReader, n::Int) = (deleteat!(r.buf, 1:n); nothing)
+Base.close(::ChunkReader) = nothing
 
 using XAMAuxData: XAMAuxData
 using XAMAuxData.SAM: AuxTag
@@ -114,6 +131,12 @@ end
         "rl" => 0,
     )
 
+    # Unmapped record as written by minimap2 --paf-no-hit, with zeros
+    rec = parse(PAFRecord, "read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0")
+    @test !is_mapped(rec)
+    @test rec.qname == "read1"
+    @test rec.qlen == 1523
+
     # Unmapped record with too few fieds
     @test try_parse("query\t123\t1\t100\t*\t*\t5\t19").kind == Errors.TooFewFields
 end
@@ -170,6 +193,13 @@ end
 
     # Mapq too high
     @test with_replaced(good, 12, "256") == Errors.IntegerOverflow
+
+    # Integer overflow, including on the last digit
+    @test with_replaced(good, 10, "2147483647").matches == typemax(Int32)
+    @test with_replaced(good, 10, "2147483648") == Errors.IntegerOverflow
+    @test with_replaced(good, 10, "9999999999") == Errors.IntegerOverflow
+    @test with_replaced(good, 12, "4294967296") == Errors.IntegerOverflow
+    @test with_replaced(good, 2, "2147483648") == Errors.IntegerOverflow
 end
 
 @testset "Bad reader" begin
@@ -261,6 +291,16 @@ end
         @test first(reader, 2) isa Vector{PAFRecord}
         @test try_next!(reader).kind == Errors.EmptyNonTailingLine
     end
+
+    # Blank line in the middle, where the buffer ends right after the blank line
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    reader = PAFReader(ChunkReader([good * "\n\n", good * "\n" * good * "\n"]))
+    @test try_next!(reader) isa PAFRecord
+    @test try_next!(reader).kind == Errors.EmptyNonTailingLine
+
+    # Trailing whitespace delivered in multiple chunks is still fine
+    reader = PAFReader(ChunkReader([good * "\n\n", "\r\n", "\n"]))
+    @test length(collect(reader)) == 1
 end
 
 @testset "Aqua" begin
