@@ -92,6 +92,7 @@ underlying fields as they are stored in the `PAFRecord`.
 * `tname::StringView{A}`. Same as `qname`, but for the target (i.e. subject)
   sequence.
 * `qlen` and `tlen`. Of type `Int`. Length of the full query and target sequence.
+  Lengths and positions up to `typemax(UInt32)`, about 4.3 Gbp, are supported.
 * `qstart` and `tstart`. Of type `Int`. Leftmost (i.e. lowest) position of the alignment
   in the query and target, respectively. This does not take strandedness into account.
 * `qend` and `tend`. Of type `Int`. Rightmost (i.e. highest) position of the alignment
