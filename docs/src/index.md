@@ -47,24 +47,29 @@ julia> PAFReader(open(path_to_paf)) do reader
 ```
 
 The [`PAFReader`](@ref) constructor takes an optional keyword `copy`, which defaults to `true`.
-If it is `false`, the record will iterate the _same_ [`PAFRecord`](@ref) object, overwriting
-it in-place. This record is a view into the reader's buffer, which is only valid until the
-reader is advanced.
+If it is `false`, the iterated [`PAFRecord`](@ref)s are views into the reader's buffer,
+instead of owning a copy of their data.
+Such a record is only valid until the reader is advanced, and may be invalidated by
+calling [`isempty`](@ref Base.isempty(::PAFReader)) on the reader.
 This reduces allocations and copying and gives a slight speed increase, but may result
-in bugs if records, or references of records of previous iterations are stored and
-unexpectedly overwritten:
+in bugs if records from previous iterations are stored, since their data may be
+silently overwritten. Use `copy` on a record to obtain a record that owns its data:
 
 ```jldoctest
-julia> records = PAFReader(collect, open(path_to_paf); copy=false);
-
-julia> println(map(i -> i.qlen, records)) # NB: All the same record!
-[288659, 288659, 288659]
+julia> PAFReader(open(path_to_paf); copy=false) do reader
+           [copy(record) for record in reader if record.qlen > 290000]
+       end |> length
+2
 ```
+
+!!! note
+    On Julia versions before 1.14, returning a `PAFRecord` from a function that is not
+    inlined allocates, even with `copy=false`.
 
 At the moments, readers do not support seeking.
 
 ## Record
-The mutable [`PAFRecord`](@ref) object represents a single line in a PAF file.
+The immutable [`PAFRecord`](@ref) object represents a single line in a PAF file.
 The individual columns of the PAF line is obtained by accessing properties of the records:
 
 ```jldoctest record
@@ -282,6 +287,7 @@ aln_identity
 query_coverage
 target_coverage
 try_next!
+Base.isempty(::PAFReader)
 is_mapped
 PairwiseMappingFormat.Errors
 PairwiseMappingFormat.try_parse
