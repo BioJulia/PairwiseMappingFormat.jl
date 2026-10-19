@@ -814,12 +814,34 @@ true
 ```
 """
 function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
-    io = reader.io
-    # Consume the previous line, now that the previous record is invalidated.
+    consume_previous!(reader)
+    (buffer, last_index, line_len) = buffer_line(reader.io)
+    # If the line is empty, this is the end of the stream, if the rest of it is whitespace.
+    iszero(last_index) && return check_tail(reader, buffer)
+    # If this results in an error, we return the error.
+    res = parse_line!(reader.record, buffer[1:last_index])
+    res isa ParserException &&
+        return ParserException(res.kind, getfield(res, :index_in_line), reader.line)
+    # Else, we update the reader. This means `next!` will continuously return
+    # an error if an error is found.
+    reader.to_consume = line_len
+    reader.line += 1
+    return res
+end
+
+# Consume the previous line. This invalidates the record if it is a view into the buffer.
+function consume_previous!(reader::PAFReader)
     if !iszero(reader.to_consume)
-        consume(io, reader.to_consume)
+        consume(reader.io, reader.to_consume)
         reader.to_consume = 0
     end
+    return nothing
+end
+
+# Fill the buffer until it contains a full line, or EOF is reached.
+# Return the buffer, the index of the last byte of the line before the \n (or \r\n),
+# and the number of bytes in the line including the newline.
+function buffer_line(io::ExpandReader)::Tuple{ImmutableMemoryView{UInt8}, Int, Int}
     buffer = get_buffer(io)
     newline = findfirst(==(0x0a), buffer)
     # Keep reading until we find a newline or reach EOF
@@ -828,56 +850,60 @@ function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException
         n_scanned = length(buffer)
         # This signals EOF - we might still have data in the buffer, if the underlying stream
         # ends with a record that doesn't end in a newline
-        iszero(fill_buffer(io)) && break
+        iszero(fill_buffer(io)) && return (buffer, length(buffer), length(buffer))
         buffer = get_buffer(io)
         newline = findnext(==(0x0a), buffer, n_scanned + 1)
     end
-    has_windows_newline = false
     # Last index before \n, and before \r if the newline is \r\n as on Windows
-    last_index = if newline === nothing
-        length(buffer)
-    else
-        if isone(newline)
-            0
-        else
-            has_windows_newline = @inbounds(buffer[newline - 1]) == UInt8('\r')
-            newline - (1 + has_windows_newline)
-        end
-    end
-    parse_mem = buffer[1:last_index]
-    # If there is no memory to parse (and we have already verified that
-    # there are no more bytes in the IO), we end
-    # This is only the end of the file if the rest of the stream is whitespace.
-    # The buffer may end after the empty line, so keep filling it until EOF.
-    if isempty(parse_mem)
-        line = reader.line
-        col = 0
-        n_scanned = 0
-        while true
-            @inbounds for b in buffer[(n_scanned + 1):end]
-                col += 1
-                line += b == UInt8('\n')
-                col *= b != UInt8('\n')
-                if b ∉ (UInt8('\r'), UInt8('\n'), UInt8('\t'), UInt8(' '))
-                    return ParserException(Errors.EmptyNonTailingLine, col % Int32, line)
-                end
+    has_windows_newline = !isone(newline) && @inbounds(buffer[newline - 1]) == UInt8('\r')
+    return (buffer, newline - (1 + has_windows_newline), newline)
+end
+
+# Called when the next line is empty. Return `nothing` if the rest of the stream is
+# whitespace, else an error.
+# The buffer may end after the empty line, so keep filling it until EOF.
+function check_tail(reader::PAFReader, buffer::ImmutableMemoryView{UInt8})::Union{Nothing, ParserException}
+    io = reader.io
+    line = reader.line
+    col = 0
+    n_scanned = 0
+    while true
+        @inbounds for b in buffer[(n_scanned + 1):end]
+            col += 1
+            line += b == UInt8('\n')
+            col *= b != UInt8('\n')
+            if b ∉ (UInt8('\r'), UInt8('\n'), UInt8('\t'), UInt8(' '))
+                return ParserException(Errors.EmptyNonTailingLine, col % Int32, line)
             end
-            n_scanned = length(buffer)
-            iszero(fill_buffer(io)) && return nothing
-            buffer = get_buffer(io)
         end
+        n_scanned = length(buffer)
+        iszero(fill_buffer(io)) && return nothing
+        buffer = get_buffer(io)
     end
-    # If this results in an error, we return the error.
-    res = parse_line!(reader.record, parse_mem)
-    res isa ParserException &&
-        return ParserException(res.kind, getfield(res, :index_in_line), reader.line)
-    # Else, we update the reader. This means `next!` will continuously return
-    # an error if an error is found.
-    # If the newline was found, we compensate for the newline by also consuming that byte,
-    # hence the extra `newline !== nothing`.
-    reader.to_consume = last_index + has_windows_newline + (newline !== nothing)
-    reader.line += 1
-    return res
+    return
+end
+
+# This is also used by `isempty`. It does not advance the reader, and does not
+# invalidate any records returned previously.
+function Base.isdone(reader::PAFReader, _...)
+    # Fast path: If the next line begins with any byte other than a newline, it is not
+    # empty, so `try_next!` would return a record or an error.
+    buffer = get_buffer(reader.io)
+    n = reader.to_consume
+    if length(buffer) > n
+        b = @inbounds buffer[n + 1]
+        b ∈ (UInt8('\r'), UInt8('\n')) || return false
+    end
+    # Slow path: We need to consume the previous line, and fill the buffer, which may
+    # overwrite the bytes the reader's record is a view into. So, make the record own its
+    # data first. This keeps any references to the record held by users valid.
+    if !iszero(n)
+        record = reader.record
+        setfield!(record, :data, copy(getfield(record, :data)))
+        consume_previous!(reader)
+    end
+    (buffer, last_index, _) = buffer_line(reader.io)
+    return iszero(last_index) && check_tail(reader, buffer) === nothing
 end
 
 @setup_workload begin

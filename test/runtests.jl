@@ -324,6 +324,52 @@ end
     @test length(collect(reader)) == 1
 end
 
+@testset "isempty" begin
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+
+    # isempty does not consume records
+    reader = PAFReader(IOBuffer(join(fill(good, 3), '\n')))
+    @test !isempty(reader)
+    @test !isempty(reader)
+    @test length(collect(reader)) == 3
+    @test isempty(reader)
+
+    # isempty does not invalidate the record with copy=false, even when it needs to
+    # fill the buffer
+    for chunks in ([good * "\n", good * "\n"], [good * "\n", "\n", "\r\n"], [good])
+        reader = PAFReader(ChunkReader(chunks); copy = false)
+        rec = try_next!(reader)
+        expected = copy(rec)
+        while !isempty(reader)
+            @test rec.qname == expected.qname
+            @test rec.tname == expected.tname
+            @test aux_data(rec) == aux_data(expected)
+            rec = try_next!(reader)
+            @test rec isa PAFRecord
+        end
+        @test rec.qname == expected.qname
+        @test try_next!(reader) === nothing
+    end
+
+    # isempty agrees with try_next! for all inputs and chunkings
+    inputs = [
+        "", "\n", "\r\n", "\n\n \t\r\n", good, good * "\n", good * "\r\n\n",
+        good * "\n\n" * good, good * "\nbad", good * "\n \n", good * "\n\r",
+        " ", "\nV", good * "\n\n\n\nx",
+    ]
+    for data in inputs, split_at in 0:length(data)
+        # Empty chunks are not allowed, since fill_buffer returning zero signals EOF
+        chunks = filter!(!isempty, [data[1:split_at], data[(split_at + 1):end]])
+        reader = PAFReader(ChunkReader(chunks))
+        while true
+            done = isempty(reader)
+            res = try_next!(reader)
+            @test done == (res === nothing)
+            res isa PAFRecord || break
+        end
+    end
+end
+
 @testset "Aqua" begin
     Aqua.test_all(PairwiseMappingFormat; ambiguities = false)
 end
