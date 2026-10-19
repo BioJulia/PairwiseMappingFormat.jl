@@ -37,3 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 - **Breaking:** The `PAFRecord(buffer_size::Int)` constructor.
+
+### Fixed
+- `isempty(reader)` no longer consumes a record from a `PAFReader`. `PAFReader` now
+  implements `Base.isdone`, which checks for more records without advancing the reader
+  or invalidating previously returned records.
