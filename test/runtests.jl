@@ -285,13 +285,17 @@ end
     records = PAFReader(collect, CursorReader(data))
     @test [r.qname for r in records] == ["my_qname", "other", "my_qname"]
 
-    # With copy=false, the record is valid until the reader is advanced
+    # With copy=false, each record is a distinct view into the reader's buffer.
+    # CursorReader never moves its data, so the views stay valid here.
     PAFReader(CursorReader(data); copy = false) do reader
         rec = try_next!(reader)
         @test rec.qname == "my_qname"
-        @test try_next!(reader) === rec
-        @test rec.qname == "other"
+        rec2 = try_next!(reader)
+        @test rec2 !== rec
+        @test rec2.qname == "other"
     end
+    records = PAFReader(collect, CursorReader(data); copy = false)
+    @test [r.qname for r in records] == ["my_qname", "other", "my_qname"]
 
     # Parsing a vector aliases it, but copying the record does not
     v = collect(codeunits(good))
@@ -362,38 +366,72 @@ end
     @test length(collect(reader)) == 3
     @test isempty(reader)
 
-    # isempty does not invalidate the record with copy=false, even when it needs to
+    # isempty does not invalidate records iterated with copy=true, even when it needs to
     # fill the buffer
+    expected = parse(PAFRecord, good)
     for chunks in ([good * "\n", good * "\n"], [good * "\n", "\n", "\r\n"], [good])
-        reader = PAFReader(ChunkReader(chunks); copy = false)
-        rec = try_next!(reader)
-        expected = copy(rec)
+        reader = PAFReader(ChunkReader(chunks))
+        (rec, _) = iterate(reader)
         while !isempty(reader)
             @test rec.qname == expected.qname
             @test rec.tname == expected.tname
             @test aux_data(rec) == aux_data(expected)
-            rec = try_next!(reader)
-            @test rec isa PAFRecord
+            (rec, _) = iterate(reader)
         end
         @test rec.qname == expected.qname
-        @test try_next!(reader) === nothing
+        @test rec.tname == expected.tname
+        @test iterate(reader) === nothing
     end
 
-    # isempty agrees with try_next! for all inputs and chunkings
+    # isdone does not fill the buffer when a view returned by try_next! is live,
+    # but isempty does
+    reader = PAFReader(ChunkReader([good * "\n", good * "\n"]))
+    rec = try_next!(reader)
+    @test Base.isdone(reader) === missing
+    @test rec.qname == "my_qname"
+    @test !isempty(reader)
+    @test try_next!(reader) isa PAFRecord
+    @test isempty(reader)
+
     inputs = [
         "", "\n", "\r\n", "\n\n \t\r\n", good, good * "\n", good * "\r\n\n",
         good * "\n\n" * good, good * "\nbad", good * "\n \n", good * "\n\r",
-        " ", "\nV", good * "\n\n\n\nx",
+        good * "\n\r\r\n", " ", "\nV", good * "\n\n\n\nx",
     ]
-    for data in inputs, split_at in 0:length(data)
-        # Empty chunks are not allowed, since fill_buffer returning zero signals EOF
-        chunks = filter!(!isempty, [data[1:split_at], data[(split_at + 1):end]])
+    # Empty chunks are not allowed, since fill_buffer returning zero signals EOF
+    function chunkings(data)
+        splits = [filter!(!isempty, [data[1:i], data[(i + 1):end]]) for i in 0:length(data)]
+        return push!(splits, [string(c) for c in data])
+    end
+    for data in inputs, chunks in chunkings(data)
+        # isdone and isempty agree with try_next!, and isdone never invalidates
+        # the record returned by try_next!
         reader = PAFReader(ChunkReader(chunks))
+        (rec, expected) = (nothing, nothing)
         while true
+            maybe_done = Base.isdone(reader)
+            rec === nothing || @test getfield(rec, :data) == getfield(expected, :data)
             done = isempty(reader)
+            maybe_done === missing || @test maybe_done == done
             res = try_next!(reader)
             @test done == (res === nothing)
             res isa PAFRecord || break
+            (rec, expected) = (res, copy(res))
+        end
+
+        # When iterating with copy=true, no view is live, so isdone is never missing
+        reader = PAFReader(ChunkReader(chunks))
+        while true
+            done = Base.isdone(reader)
+            @test done isa Bool
+            it = try
+                iterate(reader)
+            catch e
+                e isa PairwiseMappingFormat.ParserException || rethrow()
+                e
+            end
+            @test done == (it === nothing)
+            it isa Tuple || break
         end
     end
 end

@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `try_parse` and `parse` return a view into the input, so mutating the input
     also mutates the record.
   - `copy(record)` returns a record that owns its data.
+- **Breaking:** `PAFRecord` is now immutable. With `copy=false`, iterating a `PAFReader`
+  no longer returns the same object on each iteration, but a new record each time.
+  On Julia versions before 1.14, returning a `PAFRecord` from a non-inlined function,
+  such as `try_next!` or `iterate`, allocates.
 - **Breaking:** `aux_data` now returns an immutable `Auxiliary{ImmutableMemoryView{UInt8}}`,
   so the auxiliary data of records can no longer be modified.
 - **Breaking:** Reading from a closed `PAFReader` now throws, instead of
@@ -41,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** The `PAFRecord(buffer_size::Int)` constructor.
 
 ### Fixed
-- `isempty(reader)` no longer consumes a record from a `PAFReader`. `PAFReader` now
-  implements `Base.isdone`, which checks for more records without advancing the reader
-  or invalidating previously returned records.
+- `isempty(reader)` no longer consumes a record from a `PAFReader`. It may invalidate
+  the most recently returned record if that record is a view into the reader's buffer,
+  i.e. if it was returned by `try_next!`, or iterated with `copy=false`.
+  `PAFReader` now implements `Base.isdone`, which never invalidates records, and returns
+  `missing` when it can't determine whether the reader is done without doing so.

@@ -30,7 +30,7 @@ using BufferIO: AbstractBufReader, BufReader, ExpandReader, get_buffer, fill_buf
 """
     PAFRecord
 
-Mutable type representing a single PAF line. The content of the record
+Immutable type representing a single PAF line. The content of the record
 is accessed through its properties.
 
 A `PAFRecord` does not necessarily own its data, but may be a view into the
@@ -73,7 +73,7 @@ Use [`is_mapped`](@ref) to check if a record is mapped.
 * `is_rc::Bool` tells if the query and target strands are reverse-complement
   relative to each other.
 """
-mutable struct PAFRecord
+struct PAFRecord
     # The line the record was parsed from, without the trailing newline.
     # May be a view into memory not owned by the record, e.g. a reader's buffer.
     data::ImmutableMemoryView{UInt8}
@@ -490,17 +490,14 @@ PairwiseMappingFormat.ParserException
 See also: [`PAFRecord`](@ref), [`try_next!`](@ref)
 """
 try_parse(x) = try_parse(ImmutableMemoryView(x))
-try_parse(x::ImmutableMemoryView{UInt8}) = parse_line!(PAFRecord(), x)
+try_parse(x::ImmutableMemoryView{UInt8}) = parse_line(x)
 
 function Base.parse(::Type{PAFRecord}, s::Union{String, SubString{String}})
     y = try_parse(s)
     return y isa PAFRecord ? y : throw(y)
 end
 
-function parse_line!(
-        record::PAFRecord,
-        mem::ImmutableMemoryView{UInt8},
-    )::Union{PAFRecord, ParserException}
+function parse_line(mem::ImmutableMemoryView{UInt8})::Union{PAFRecord, ParserException}
     # Note: The aux data may begin at lastindex(mem) + 1, which must fit in an Int32
     lastindex(mem) >= typemax(Int32) &&
         return ParserException(typemax(Int32), Errors.LineTooLong)
@@ -534,7 +531,7 @@ function parse_line!(
     end
     @inbounds mem[i + 1] == UInt8('\t') ||
         return ParserException((i + 1) % Int32, Errors.TooFewFields)
-    iszero(strand) && return finish_unmapped!(record, mem, qname, qlen, i + 2)
+    iszero(strand) && return finish_unmapped(mem, qname, qlen, i + 2)
 
     # Load rest of the fields
     (tname, i) = @? parse_str(mem, i + 2) # i + 2 because strand plus tab took two bytes
@@ -554,33 +551,32 @@ function parse_line!(
         mapq % UInt8
     end
 
-    # Fill in fields of the struct. The aux data begins at `i`.
+    # The aux data begins at `i`.
     # The integers have been checked to fit in an UInt32 by `parse_int`.
-    record.data = mem
-    record.qname_len = length(qname) % Int32
-    record.tname_start = first(tname) % Int32
-    record.tname_len = length(tname) % Int32
-    record.aux_start = i % Int32
-    record.qlen = qlen % UInt32
-    record.qstart = qstart % UInt32
-    record.qend = qend % UInt32
-    record.tlen = tlen % UInt32
-    record.tstart = tstart % UInt32
-    record.tend = tend % UInt32
-    record.matches = matches % UInt32
-    record.alnlen = alnlen % UInt32
-    record.mapq = mapq
-    record.strand = strand
-
-    return record
+    return PAFRecord(
+        mem,
+        length(qname) % Int32,
+        first(tname) % Int32,
+        length(tname) % Int32,
+        i % Int32,
+        qlen % UInt32,
+        qstart % UInt32,
+        qend % UInt32,
+        tlen % UInt32,
+        tstart % UInt32,
+        tend % UInt32,
+        matches % UInt32,
+        alnlen % UInt32,
+        mapq,
+        strand,
+    )
 end
 
 # Parse the remaining fields of an unmapped record.
 # These are validated like for mapped records, except that the integers may be zero,
 # as written by e.g. minimap2's `--paf-no-hit`. Their values are not stored.
 # i is the byte index of the strand plus two
-function finish_unmapped!(
-        record::PAFRecord,
+function finish_unmapped(
         mem::ImmutableMemoryView{UInt8},
         qname::UnitRange{Int},
         qlen::Int,
@@ -597,24 +593,8 @@ function finish_unmapped!(
     (mapq, i) = @? parse_int(mem, i, true, true)
     mapq > 255 && return ParserException(i % Int32, Errors.IntegerOverflow)
 
-    # Fill in fields. The aux data begins at `i`.
-    record.data = mem
-    record.qname_len = length(qname) % Int32
-    record.tname_start = 1
-    record.tname_len = 0
-    record.aux_start = i % Int32
-    record.qlen = qlen % UInt32
-    record.qstart = 0
-    record.qend = 0
-    record.tlen = 0
-    record.tstart = 0
-    record.tend = 0
-    record.matches = 0
-    record.alnlen = 0
-    record.mapq = 0xff
-    record.strand = 0x00
-
-    return record
+    # The aux data begins at `i`.
+    return PAFRecord(mem, length(qname) % Int32, 1, 0, i % Int32, qlen % UInt32, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x00)
 end
 
 # Just get the index of the next \t
@@ -679,10 +659,11 @@ For efficiency, the auxiliary fields are not validated until they are accessed.
 If `io` is an `IO`, it is wrapped in a `BufferIO.BufReader` with a buffer size
 given by the keyword `buf_size`.
 
-If `copy` is false, the *same* record will be returned on each iteration.
-This record is a view into the reader's buffer, and is only valid until the reader is
-advanced. This removes a few allocations and copies per iteration, but iterating the
-reader will overwrite old records.
+If `copy` is false, the iterated records are views into the reader's buffer, and are
+only valid until the reader is advanced. Calling [`isempty`](@ref Base.isempty(::PAFReader))
+on the reader may also invalidate them.
+This removes a few allocations and copies per iteration, but records must not be used
+after the reader has moved on, e.g. by storing them.
 
 # Examples
 ```jldoctest
@@ -702,30 +683,29 @@ julia> PAFReader(open(path_to_paf)) do reader
 288659
 
 julia> PAFReader(open(path_to_paf); copy=false) do reader
-           fst = first(reader)
-           all(reader) do record
-               record === fst
-           end
+           sum(record -> record.qlen, reader)
        end
-true
+889088
 ```
 
 See also: [`PAFRecord`](@ref), [`try_next!`](@ref)
 """
 mutable struct PAFReader{I <: AbstractBufReader}
     const io::ExpandReader{I}
-    const record::PAFRecord
     # Number of bytes of the last parsed line, including its newline, which have not
     # yet been consumed from `io`. Consuming is deferred to the next call to `try_next!`,
     # such that the record, which is a view into the buffer of `io`, stays valid.
     to_consume::Int
     line::Int
-    # Whether to iterate copies of the record stored in this struct
+    # Whether to iterate copies of the parsed records
     copy::Bool
+    # Whether a record which is a view into the buffer of `io` has been returned to the
+    # user, and is still valid. While this is set, `isdone` must not fill the buffer.
+    view_live::Bool
 end
 
 function PAFReader(io::AbstractBufReader; copy::Bool = true)
-    return PAFReader{typeof(io)}(ExpandReader(io), PAFRecord(), 0, 1, copy)
+    return PAFReader{typeof(io)}(ExpandReader(io), 0, 1, copy, false)
 end
 
 function PAFReader(io::IO; buf_size::Int = 2^16, copy::Bool = true)
@@ -766,12 +746,14 @@ function Base.copy(record::PAFRecord)
 end
 
 function Base.iterate(reader::PAFReader, (::Nothing) = nothing)
-    res = try_next!(reader)
+    res = next_view!(reader)
     return if res isa ParserException
         throw(res)
     elseif res === nothing
         nothing
     else
+        # A copy owns its data, so the view never reaches the user
+        reader.view_live = !reader.copy
         rec = reader.copy ? copy(res) : res
         (rec, nothing)
     end
@@ -789,8 +771,9 @@ Try to read a record from the [`PAFReader`](@ref) and advance the reader. This m
 Even if the reader itself is not advanced, it may still fill its internal buffer, advancing
 the `IO` object it wraps.
 
-The returned record is the reader's own record, which is a view into the reader's buffer.
-It is overwritten, and its data invalidated, by the next call to `try_next!`.
+The returned record is a view into the reader's buffer. Its data is invalidated by
+the next call to `try_next!`, and may be invalidated by calling `isempty` on the reader.
+Use `copy` on the record to obtain a record that owns its data.
 
 # Examples
 ```jldoctest
@@ -815,12 +798,19 @@ true
 ```
 """
 function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
+    res = next_view!(reader)
+    res isa PAFRecord && (reader.view_live = true)
+    return res
+end
+
+# Like `try_next!`, but the returned record is not yet exposed to the user
+function next_view!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
     consume_previous!(reader)
     (buffer, last_index, line_len) = buffer_line(reader.io)
     # If the line is empty, this is the end of the stream, if the rest of it is whitespace.
     iszero(last_index) && return check_tail(reader, buffer)
     # If this results in an error, we return the error.
-    res = parse_line!(reader.record, buffer[1:last_index])
+    res = parse_line(buffer[1:last_index])
     res isa ParserException &&
         return ParserException(res.kind, getfield(res, :index_in_line), reader.line)
     # Else, we update the reader. This means `next!` will continuously return
@@ -836,6 +826,7 @@ function consume_previous!(reader::PAFReader)
         consume(reader.io, reader.to_consume)
         reader.to_consume = 0
     end
+    reader.view_live = false
     return nothing
 end
 
@@ -884,27 +875,60 @@ function check_tail(reader::PAFReader, buffer::ImmutableMemoryView{UInt8})::Unio
     return
 end
 
-# This is also used by `isempty`. It does not advance the reader, and does not
-# invalidate any records returned previously.
-function Base.isdone(reader::PAFReader, _...)
+# This does not advance the reader, and never invalidates a returned record.
+# If that is not possible, because a returned record is a view into the buffer and the
+# buffer must be filled to determine the answer, return `missing`.
+function Base.isdone(reader::PAFReader, _...)::Union{Bool, Missing}
+    buffer = get_buffer(reader.io)
+    rest = buffer[(reader.to_consume + 1):end]
     # Fast path: If the next line begins with any byte other than a newline, it is not
     # empty, so `try_next!` would return a record or an error.
-    buffer = get_buffer(reader.io)
-    n = reader.to_consume
-    if length(buffer) > n
-        b = @inbounds buffer[n + 1]
+    if !isempty(rest)
+        b = @inbounds rest[1]
         b ∈ (UInt8('\r'), UInt8('\n')) || return false
     end
-    # Slow path: We need to consume the previous line, and fill the buffer, which may
-    # overwrite the bytes the reader's record is a view into. So, make the record own its
-    # data first. This keeps any references to the record held by users valid.
-    if !iszero(n)
-        record = reader.record
-        setfield!(record, :data, copy(getfield(record, :data)))
-        consume_previous!(reader)
+    # If no view is live, we can freely consume the previous line and fill the buffer.
+    reader.view_live || return isdone_filling!(reader)
+    # Check if the next line is empty, mirroring `buffer_line`.
+    isempty(rest) && return missing
+    b = @inbounds rest[1]
+    if b == UInt8('\r')
+        length(rest) == 1 && return missing
+        @inbounds(rest[2]) == UInt8('\n') || return false
+    elseif b != UInt8('\n')
+        # Line is not empty, so `try_next!` returns a record or an error.
+        return false
     end
+    # The next line is empty, so the reader is done if the rest of the stream is
+    # whitespace, mirroring `check_tail`. We can only tell if it isn't.
+    for b in rest
+        b ∉ (UInt8('\r'), UInt8('\n'), UInt8('\t'), UInt8(' ')) && return false
+    end
+    return missing
+end
+
+function isdone_filling!(reader::PAFReader)::Bool
+    consume_previous!(reader)
     (buffer, last_index, _) = buffer_line(reader.io)
     return iszero(last_index) && check_tail(reader, buffer) === nothing
+end
+
+"""
+    isempty(reader::PAFReader)::Bool
+
+Check whether `reader` has no more records, i.e. whether [`try_next!`](@ref) would return
+`nothing`. This does not advance the reader, but may invalidate the previous record
+by mutating the reader's inner state.
+
+In contrast, `Base.isdone(reader)`, never invalidates a record,
+and returns `missing` if it can't determine whether the reader is done without invalidating
+previous records.
+"""
+function Base.isempty(reader::PAFReader)
+    done = Base.isdone(reader)
+    done === missing || return done
+    # Invalidate the live view, such that `isdone` may fill the buffer
+    return isdone_filling!(reader)
 end
 
 @setup_workload begin
