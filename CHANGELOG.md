@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `StringView`, and `is_rc` always a `Bool`.
 - Sequence lengths and positions up to `typemax(UInt32)` (about 4.3 Gbp) are now supported,
   up from `typemax(Int32)`. Larger integers are rejected with `IntegerOverflow`.
+- **Breaking:** Fields 6-12 of unmapped records are now validated like those of mapped
+  records, except that the integer fields may be zero. Previously, their content was ignored.
 
 ### Removed
 - **Breaking:** The `PAFRecord(buffer_size::Int)` constructor.

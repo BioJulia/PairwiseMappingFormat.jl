@@ -106,6 +106,17 @@ end
     @test isapprox(target_coverage(get_rec(17, 16, 15, 16)), 6 / 16)
 end
 
+function with_replaced_str(s::String, field::Integer, new::String)
+    fields = split(s, '\t')
+    fields[field] = new
+    return join(fields, "\t")
+end
+
+function with_replaced(s::String, field::Integer, new::String)
+    y = try_parse(with_replaced_str(s, field, new))
+    return y isa PairwiseMappingFormat.ParserException ? y.kind : y
+end
+
 @testset "Edge case records" begin
     (rec1, rec2, rec3) = PAFReader(open(joinpath(path_of_format("PAF"), "good2.paf"))) do reader
         y = first(reader, 3)
@@ -147,13 +158,30 @@ end
 
     # Unmapped record with too few fieds
     @test try_parse("query\t123\t1\t100\t*\t*\t5\t19").kind == Errors.TooFewFields
-end
 
-function with_replaced(s::String, field::Integer, new::String)
-    fields = split(s, '\t')
-    fields[field] = new
-    y = try_parse(join(fields, "\t"))
-    return y isa PairwiseMappingFormat.ParserException ? y.kind : y
+    # The fields of unmapped records are validated like for mapped records,
+    # except that integers may be zero
+    unmapped = "read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0"
+    for field in 6:12
+        @test with_replaced(unmapped, field, "0") isa PAFRecord
+    end
+    # Use a longer target name, so emptying a field does not make the line too short
+    long_unmapped = with_replaced_str(unmapped, 6, "some_target_name")
+    for field in 7:12
+        @test with_replaced(long_unmapped, field, "") == Errors.EmptyInteger
+        @test with_replaced(unmapped, field, "-1") == Errors.BadInteger
+        @test with_replaced(unmapped, field, "abc") == Errors.BadInteger
+        @test with_replaced(unmapped, field, "4294967296") == Errors.IntegerOverflow
+    end
+    @test with_replaced(unmapped, 12, "255") isa PAFRecord
+    @test with_replaced(unmapped, 12, "256") == Errors.IntegerOverflow
+    @test with_replaced(unmapped, 9, "1") == Errors.PositionOutOfBounds
+    @test try_parse("read1\t1523\t0\t0\t*\t*\t10\t5\t4\t0\t0\t0").kind == Errors.BackwardsIndices
+    @test try_parse("read1\t1523\t0\t0\t*\t*\t10\t0\t5\t0\t0\t0") isa PAFRecord
+    @test try_parse("read1\t1523\t0\t0\t*x*\t10\t0\t5\t0\t0\t0").kind == Errors.TooFewFields
+    # Aux data is found after the mapq field
+    rec = try_parse("read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0\tcm:i:4")
+    @test Dict(aux_data(rec)) == Dict{AuxTag, Any}("cm" => 4)
 end
 
 @testset "Errors" begin

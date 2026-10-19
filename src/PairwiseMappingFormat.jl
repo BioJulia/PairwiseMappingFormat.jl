@@ -524,7 +524,7 @@ function parse_line!(
         return ParserException(lastindex(mem) % Int32, Errors.TooFewFields)
     b = @inbounds mem[i]
     strand = if b == UInt8('*')
-        return finish_unmapped!(record, mem, qname, qlen, i + 2)
+        0x00
     elseif b == UInt8('-')
         0x02
     elseif b == UInt8('+')
@@ -534,6 +534,7 @@ function parse_line!(
     end
     @inbounds mem[i + 1] == UInt8('\t') ||
         return ParserException((i + 1) % Int32, Errors.TooFewFields)
+    iszero(strand) && return finish_unmapped!(record, mem, qname, qlen, i + 2)
 
     # Load rest of the fields
     (tname, i) = @? parse_str(mem, i + 2) # i + 2 because strand plus tab took two bytes
@@ -574,8 +575,9 @@ function parse_line!(
     return record
 end
 
-# If the record is unmapped we don't even bother reading
-# the rest of the fields, so take this fast path
+# Parse the remaining fields of an unmapped record.
+# These are validated like for mapped records, except that the integers may be zero,
+# as written by e.g. minimap2's `--paf-no-hit`. Their values are not stored.
 # i is the byte index of the strand plus two
 function finish_unmapped!(
         record::PAFRecord,
@@ -583,25 +585,24 @@ function finish_unmapped!(
         qname::UnitRange{Int},
         qlen::Int,
         i::Int,
-    )
-    # Determine the position of aux data
-    for _ in 1:6
-        i = findnext(==(UInt8('\t')), mem, i)
-        i = if isnothing(i)
-            return ParserException(lastindex(mem) % Int32, Errors.TooFewFields)
-        else
-            i + 1
-        end
-    end
-    i = findnext(==(UInt8('\t')), mem, i)
-    aux_start = isnothing(i) ? lastindex(mem) + 1 : i + 1
+    )::Union{PAFRecord, ParserException}
+    (_, i) = @? parse_str(mem, i)
+    (tlen, i) = @? parse_int(mem, i, true)
+    (tstart, i) = @? parse_int(mem, i, true)
+    (tend, i) = @? parse_int(mem, i, true)
+    tend ≥ tstart || return ParserException(i % Int32, Errors.BackwardsIndices)
+    tend > tlen && return ParserException(i % Int32, Errors.PositionOutOfBounds)
+    (_, i) = @? parse_int(mem, i, true) # matches
+    (_, i) = @? parse_int(mem, i, true) # alnlen
+    (mapq, i) = @? parse_int(mem, i, true, true)
+    mapq > 255 && return ParserException(i % Int32, Errors.IntegerOverflow)
 
-    # Fill in fields
+    # Fill in fields. The aux data begins at `i`.
     record.data = mem
     record.qname_len = length(qname) % Int32
     record.tname_start = 1
     record.tname_len = 0
-    record.aux_start = aux_start % Int32
+    record.aux_start = i % Int32
     record.qlen = qlen % UInt32
     record.qstart = 0
     record.qend = 0
