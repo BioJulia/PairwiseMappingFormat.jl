@@ -63,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skips all consecutive whitespace-only lines, and the error is reported at the first
   of them, instead of at the first non-whitespace byte after them.
 
+- Empty query and target intervals, i.e. where the start equals the end, are now
+  accepted anywhere within the sequence. Previously, they were rejected with
+  `InvalidZero` at the start of the sequence, where the end is zero, but accepted elsewhere.
+
 ### Removed
 - **Breaking:** The `PAFRecord(buffer_size::Int)` constructor.
 

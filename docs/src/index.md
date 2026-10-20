@@ -105,11 +105,14 @@ underlying fields as they are stored in the `PAFRecord`.
   in the query and target, respectively. This does not take strandedness into account.
 * `qend` and `tend`. Of type `Int`. Rightmost (i.e. highest) position of the alignment
   in the query and target, respectively. This does not take strandedness into account.
-  As such, we always have `record.qend - record.qstart >= 0`, and likewise for the target.
+  The interval may be empty, in which case `record.qstart:record.qend` is an empty range.
+  As such, we always have `record.qend - record.qstart >= -1`, and likewise for the target.
 * `alnlen::Int`. Length of alignment. That includes gaps in query and target, and may therefore
   not match either `qend - qstart + 1`, or that of the target.
 * `matches::Int`. Number of residue matches (not mismatches) in the alignment.
-  `matches / alnlen` is the alignment identity and is between 0 and 1.
+  `matches / alnlen` is the alignment identity, which is between 0 and 1 for well-formed
+  records. The parser does not check that `matches <= alnlen`, or that `alnlen > 0`.
+  See [`aln_identity`](@ref).
 * `mapq::Union{Int, Nothing}`. Mapping quality, from 0:254, where 254 is the better quality.
   When calibrated, the probability the mapping is correct should be 10^(-mapq / 10).
   A value of `nothing` indicates the mapping quality is unavailable.

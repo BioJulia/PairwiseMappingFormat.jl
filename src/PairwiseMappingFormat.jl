@@ -63,8 +63,9 @@ Use [`is_mapped`](@ref) to check if a record is mapped.
   ending positions of the alignments on the query and target strand.
   These uses one-based, closed interval indexing as usual in Julia, but unlike
   the underlying PAF format.
-  The ending positions are always >= the starting ones, and the ending positions
-  are always <= the query/target lengths.
+  The intervals may be empty, in which case the ending position is the starting
+  position minus one, so `qstart:qend` is an empty range. Hence, the ending positions
+  are always >= the starting ones minus one, and always <= the query/target lengths.
 * `matches::Int` gives the number of nucleotides / residues which match
   (i.e. are equal) in the alignment.
 * `alnlen::Int` gives the length of the alignment
@@ -95,7 +96,7 @@ struct PAFRecord
     tstart::UInt32
     tend::UInt32 # always >= tstart
     matches::UInt32
-    alnlen::UInt32 # always >= 1
+    alnlen::UInt32 # may be zero, and may be smaller than matches
     mapq::UInt8 # stored as 0xff for missing
     strand::UInt8 # 0x00: *, 0x01: +, 0x02: -
     # 16 bits of padding, which we can use for something else later
@@ -272,7 +273,9 @@ end
 
 Return the nucleotide / residue identity, defined as the number of
 matches divided by the alignment length.
-This is a number between 0 and 1.
+For well-formed records, this is a number between 0 and 1. However, the parser does not
+check that the number of matches is at most the alignment length, so this may be larger
+than 1. If the alignment length is zero, this returns `NaN` or `Inf`.
 Throws an [`UnmappedError`](@ref) if the record is unmapped.
 
 # Examples
@@ -563,13 +566,9 @@ function parse_line(mem::ImmutableMemoryView{UInt8})::Union{PAFRecord, ParserExc
     # The parse_x functions will return the next index to begin from (after the tab)
     (qname, i) = @? parse_str(mem, 1)
     (qlen, i) = @? parse_int(mem, i, false)
+    # Intervals may be empty, i.e. start == end, so the end may be zero
     (qstart, i) = @? parse_int(mem, i, true)
-    # qend may only be zero for unmapped records, e.g. minimap2's `--paf-no-hit`
-    # lines, so peek at the strand to check that before parsing it below.
     (qend, i) = @? parse_int(mem, i, true)
-    if iszero(qend) && (i > lastindex(mem) || @inbounds(mem[i]) != UInt8('*'))
-        return ParserException((i - 1) % Int32, Errors.InvalidZero)
-    end
     qend ≥ qstart || return ParserException(i % Int32, Errors.BackwardsIndices)
     qend > qlen && return ParserException(i % Int32, Errors.PositionOutOfBounds)
 
@@ -595,7 +594,7 @@ function parse_line(mem::ImmutableMemoryView{UInt8})::Union{PAFRecord, ParserExc
     (tname, i) = @? parse_str(mem, i + 2) # i + 2 because strand plus tab took two bytes
     (tlen, i) = @? parse_int(mem, i, false)
     (tstart, i) = @? parse_int(mem, i, true)
-    (tend, i) = @? parse_int(mem, i, false)
+    (tend, i) = @? parse_int(mem, i, true)
     tend ≥ tstart || return ParserException(i % Int32, Errors.BackwardsIndices)
     tend > tlen && return ParserException(i % Int32, Errors.PositionOutOfBounds)
     (matches, i) = @? parse_int(mem, i, true)

@@ -195,9 +195,13 @@ end
         @test with_replaced(good, allow_zero, "0") isa PAFRecord
     end
 
-    for not_allow_zero in [2, 4, 7, 9]
+    for not_allow_zero in [2, 7]
         @test with_replaced(good, not_allow_zero, "0") == Errors.InvalidZero
     end
+
+    # Ends may be zero, but only if the start is too, giving an empty interval
+    @test with_replaced(good, 4, "0") == Errors.BackwardsIndices
+    @test with_replaced(good, 9, "0") == Errors.BackwardsIndices
 
     # qend and tend must be >= qstart tstart
     @test with_replaced(good, 3, "1000000") == Errors.BackwardsIndices
@@ -249,6 +253,31 @@ end
     # Empty interval at the very end of the sequence doesn't overflow
     rec = try_parse("q\t$m\t$m\t$m\t+\tt\t5\t0\t5\t1\t1\t0")
     @test (rec.qstart, rec.qend) == (Int(m) + 1, m)
+end
+
+@testset "Empty intervals" begin
+    # Empty intervals are accepted anywhere within the sequence, including at its
+    # start and end. They become empty one-based ranges.
+    for (start, stop) in [(0, 0), (5, 5), (10, 10)]
+        rec = parse(PAFRecord, "q\t10\t$start\t$stop\t+\tt\t10\t$start\t$stop\t0\t0\t0")
+        @test (rec.qstart, rec.qend) == (start + 1, stop)
+        @test (rec.tstart, rec.tend) == (start + 1, stop)
+        @test isempty(rec.qstart:rec.qend)
+        @test isempty("0123456789"[rec.tstart:rec.tend])
+        @test query_coverage(rec) == 0.0
+        @test target_coverage(rec) == 0.0
+        @test isnan(aln_identity(rec))
+    end
+
+    # But not out of bounds
+    @test try_parse("q\t10\t11\t11\t+\tt\t10\t0\t0\t0\t0\t0").kind == Errors.PositionOutOfBounds
+    @test try_parse("q\t10\t0\t0\t+\tt\t10\t11\t11\t0\t0\t0").kind == Errors.PositionOutOfBounds
+
+    # matches and alnlen are not validated against each other
+    rec = parse(PAFRecord, "q\t10\t0\t5\t+\tt\t10\t0\t5\t7\t3\t0")
+    @test aln_identity(rec) == 7 / 3
+    rec = parse(PAFRecord, "q\t10\t0\t5\t+\tt\t10\t0\t5\t2\t0\t0")
+    @test aln_identity(rec) == Inf
 end
 
 @testset "Bad reader" begin
