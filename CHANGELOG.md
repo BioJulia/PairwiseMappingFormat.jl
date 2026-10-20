@@ -56,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Previously, only an empty line did, and a line of e.g. a single space was a
   `TooFewFields` error.
 
+- **Breaking:** When `try_next!` returns a `ParserException`, or iterating a `PAFReader`
+  throws one, the reader now advances past the invalid line, so the next call continues
+  from the following line. Previously, the reader returned the same error forever.
+  This allows skipping invalid lines. For an `EmptyNonTailingLine` error, the reader
+  skips all consecutive whitespace-only lines, and the error is reported at the first
+  of them, instead of at the first non-whitespace byte after them.
+
 ### Removed
 - **Breaking:** The `PAFRecord(buffer_size::Int)` constructor.
 
