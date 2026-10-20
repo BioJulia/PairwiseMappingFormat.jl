@@ -105,7 +105,7 @@ underlying fields as they are stored in the `PAFRecord`.
   in the query and target, respectively. This does not take strandedness into account.
 * `qend` and `tend`. Of type `Int`. Rightmost (i.e. highest) position of the alignment
   in the query and target, respectively. This does not take strandedness into account.
-  As such, we always have `record.qend - record.qtart) >= 0`, and likewise for the target.
+  As such, we always have `record.qend - record.qstart >= 0`, and likewise for the target.
 * `alnlen::Int`. Length of alignment. That includes gaps in query and target, and may therefore
   not match either `qend - qstart + 1`, or that of the target.
 * `matches::Int`. Number of residue matches (not mismatches) in the alignment.
@@ -118,7 +118,7 @@ underlying fields as they are stored in the `PAFRecord`.
 The PAF format does not contain fields for alignment identity, query coverage
 or target coverage.
 However, these can be approximated with the functions [`aln_identity`](@ref),
-[`query_coverage`](@ref) and [`query_coverage`](@ref).
+[`query_coverage`](@ref) and [`target_coverage`](@ref).
 
 Besides being iterated from [`PAFReader`](@ref), records can also be created by
 parsing from a bytes-like object such as a `String`:
@@ -171,7 +171,7 @@ ERROR: Error when parsing PAF record on line 1, near byte number 14 in line: Not
 [...]
 ```
 
-In some circuomstances, throwing exceptions may not be acceptable, and so PairwiseMappingFormat.jl
+In some circumstances, throwing exceptions may not be acceptable, and so PairwiseMappingFormat.jl
 provide functionality for returning errors as values.
 These values can then be checked to programmatically handle error states.
 
@@ -186,7 +186,7 @@ julia> println(PAF.try_parse("not a PAF line"))
 PairwiseMappingFormat.ParserException(PairwiseMappingFormat.Errors.TooFewFields, 14, 1)
 ```
 
-Similarly, the next record of a `PAFReader` may be obtained with the unexported [`try_next!`](@ref)
+Similarly, the next record of a `PAFReader` may be obtained with the [`try_next!`](@ref)
 function.
 This function will either:
 * Return `nothing` if the reader has no more records. Any future calls will
@@ -231,9 +231,16 @@ julia> err.kind
 TooFewFields::Err = 0
 ```
 
-The precise value of this `.kind` object for any given error condition is subject
-to change across minor versions and new values may be introduced.
-This is because the same error may be detected in multiple different ways.
+The `.kind` is intended for diagnostics, such as logging or counting errors, and should
+not be relied on to handle errors programmatically.
+An invalid line is often invalid in several ways, and which of them is reported depends
+on implementation details. Therefore, the kind reported for a given invalid input is
+deterministic within a version of this package, but may change in any minor release,
+and new kinds may be added.
+In contrast, whether input is rejected, and the line the error is reported on, are stable.
+
+The error message also includes the approximate position of the error within the line.
+This position is only meant for humans to read, and is not part of the API.
 
 ## [Auxiliary fields](@id aux)
 [`PAFRecord`](@ref)s may contain extra auxiliary fields at the end of the records,

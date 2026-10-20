@@ -1,7 +1,7 @@
 """
     module PairwiseMappingFormat
 
-Parse files of the PairwisemAppingFormat (PAF) format.
+Parse files in the Pairwise mApping Format (PAF).
 """
 module PairwiseMappingFormat
 
@@ -97,7 +97,7 @@ struct PAFRecord
     matches::UInt32
     alnlen::UInt32 # always >= 1
     mapq::UInt8 # stored as 0xff for missing
-    strand::UInt8 # 0x00: *, 0x01: -, 0x02: +
+    strand::UInt8 # 0x00: *, 0x01: +, 0x02: -
     # 16 bits of padding, which we can use for something else later
 end
 
@@ -358,6 +358,10 @@ end
 Wrapper module used to contain the instances of error types,
 and not pollute the namespace of the package.
 
+The error kinds are intended for diagnostics. Which kind is reported for a given invalid
+input may change in any minor release, and new kinds may be added.
+See [`PairwiseMappingFormat.ParserException`](@ref).
+
 # Examples
 ```jldoctest
 julia> print(PAF.Errors.InvalidZero)
@@ -392,8 +396,20 @@ using .Errors: Err
 The exception type thrown by iterating [`PAFReader`](@ref), or a failed `parse` of
 a [`PAFRecord`](@ref). The functions `try_parse` and `try_next!` may return
 (not throw) values of this type.
-The line the error occurred may be accessed with the `.line` field.
-The error kind may be accessed with the `.kind` field.
+
+The line the error occurred on may be accessed with the `.line` property.
+For `try_parse` and `parse`, this is always 1.
+
+The `.kind` property is a [`PairwiseMappingFormat.Errors.Err`](@ref PairwiseMappingFormat.Errors)
+describing why the line was rejected. It is intended for diagnostics, such as logging or
+counting errors: An invalid line is often invalid in several ways, and which of them is
+reported depends on implementation details. Therefore, the kind reported for a given
+invalid input is deterministic within a version of this package, but may change in any
+minor release, and new kinds may be added.
+In contrast, whether input is rejected, and the line the error is reported on, are stable.
+
+The error message printed by `showerror` includes the approximate position of the error
+within the line. This position is not part of the API.
 
 # Examples
 ```jldoctest
@@ -763,7 +779,7 @@ end
 
 Base.IteratorSize(::Type{<:PAFReader}) = Base.SizeUnknown()
 Base.eltype(::Type{<:PAFReader}) = PAFRecord
-Base.close(reader::PAFReader) = close(reader.io) # TODO: Docstring
+Base.close(reader::PAFReader) = close(reader.io)
 
 function PAFReader(f::Function, io::Union{IO, AbstractBufReader}; kwargs...)
     reader = PAFReader(io; kwargs...)
