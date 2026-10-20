@@ -277,6 +277,16 @@ MemoryViews.MemoryView(record::PAFRecord) = getfield(record, :data)
 Base.String(record::PAFRecord) = String(getfield(record, :data))
 Base.print(io::IO, record::PAFRecord) = (write(io, getfield(record, :data)); nothing)
 
+# Records are equal if their lines are byte-equal, regardless of whether they share memory.
+Base.:(==)(a::PAFRecord, b::PAFRecord) = getfield(a, :data) == getfield(b, :data)
+
+# Salt the hash, such that a record does not hash like its line as a string.
+# Hash through StringView, because it is faster than the generic array hash.
+const RECORD_HASH_SALT = 0x8a2e5d1f6b3c9047 % UInt
+function Base.hash(record::PAFRecord, h::UInt)
+    return hash(StringView(getfield(record, :data)), h ⊻ RECORD_HASH_SALT)
+end
+
 # Note: We return nothing instead of missing because fuck missing
 function mapq(record::PAFRecord)::Union{Int, Nothing}
     x = getfield(record, :mapq)

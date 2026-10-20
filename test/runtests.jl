@@ -105,6 +105,30 @@ end
     @test first(mem) == UInt8('Q')
 end
 
+@testset "Equality and hashing" begin
+    line = "q\t10\t0\t5\t+\tt\t20\t5\t10\t5\t5\t60\tab:Z:x"
+    a = parse(PAFRecord, line)
+    for b in (
+            parse(PAFRecord, line * "\n"),
+            parse(PAFRecord, line * "\r\n"),
+            parse(PAFRecord, collect(codeunits(line))),
+            copy(a),
+        )
+        @test a == b
+        @test isequal(a, b)
+        @test hash(a) == hash(b)
+    end
+    c = parse(PAFRecord, line * "\tcd:i:1")
+    @test a != c
+    @test hash(a) != hash(c)
+    @test hash(a) != hash(line)
+    @test length(Set([a, copy(a), c])) == 2
+
+    unmapped = "read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0"
+    @test parse(PAFRecord, unmapped) == parse(PAFRecord, unmapped * "\n")
+    @test parse(PAFRecord, unmapped) != a
+end
+
 @testset "Coverage and identity" begin
     function get_rec(qlen::Int, tlen::Int, matches::Int, alnlen::Int)
         fields = split(
