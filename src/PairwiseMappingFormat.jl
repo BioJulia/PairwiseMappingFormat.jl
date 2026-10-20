@@ -696,24 +696,14 @@ end
 Construct a `PAFReader`, an iterator of [`PAFRecord`](@ref) read from `io`.
 Iterating this object returns a `PAFRecord` for each valid line of input,
 and throws a [`ParserException`](@ref) when an invalid record is found.
-For efficiency, the auxiliary fields are not validated until they are accessed.
-
-Lines end with `"\\n"` or `"\\r\\n"`. Other whitespace at the end of a line is not stripped:
-It is part of the last field, and may make it invalid.
-The first line consisting only of whitespace (spaces, tabs, `\\r` and `\\n`) marks the end
-of the records. All remaining input must then be whitespace, else a `ParserException` of
-kind `EmptyNonTailingLine` is thrown.
-
-If `io` is an `IO`, it is wrapped in a `BufferIO.BufReader` with a buffer size
-given by the keyword `buf_size`.
 
 If `copy` is false, the records returned by iterating the reader, or by [`try_next!`](@ref),
-are views into the reader's buffer, and are only valid until the reader is advanced.
-Calling [`isempty`](@ref Base.isempty(::PAFReader)) on the reader may also invalidate them.
+are views into the reader's buffer, and are only valid until the reader is mutated,
+which happens on iterating the reader or, `try_next!`, `isempty`.
 This removes a few allocations and copies per iteration, but records must not be used
-after the reader has moved on, e.g. by storing them.
-Using an invalidated record is not detected: Its data may be silently overwritten
-with the content of later lines. Use `copy` on a record to obtain a record that owns its data.
+after they are invalidated.
+
+See also: [`PAFRecord`](@ref), [`try_next!`](@ref)
 
 # Examples
 ```jldoctest
@@ -738,7 +728,15 @@ julia> PAFReader(open(path_to_paf); copy=false) do reader
 889088
 ```
 
-See also: [`PAFRecord`](@ref), [`try_next!`](@ref)
+# Extended help
+After throwing a `ParserException`, the reader advances over the malformed record,
+so iteration may be consumed after catching the exception.
+
+For efficiency, the auxiliary fields are not validated until they are accessed.
+
+Lines end with `"\\n"` or `"\\r\\n"`. Other whitespace at the end of a line is not stripped:
+It is part of the last field, and may make it invalid.
+
 """
 mutable struct PAFReader{I <: AbstractBufReader}
     const io::ExpandReader{I}
@@ -813,11 +811,9 @@ end
 Try to read a record from the [`PAFReader`](@ref) and advance the reader. This may yield one of three options:
 * If the reader is empty, return `nothing` and do not advance the reader
 * If the next record is invalid, return (do not throw) a `ParserException` and
-  do not advance the reader
+  advance the reader past the invalid line. The next call continues from the next line,
+  so invalid lines may be skipped by ignoring the error.
 * If the next record is valid, return it as a [`PAFRecord`](@ref) and advance the reader
-
-Even if the reader itself is not advanced, it may still fill its internal buffer, advancing
-the `IO` object it wraps.
 
 If the reader was constructed with `copy=true` (the default), the returned record owns
 its data. If `copy=false`, the record is a view into the reader's buffer, which is
@@ -837,12 +833,15 @@ true
 julia> typeof([try_next!(reader) for i in 1:100])
 Vector{Nothing} (alias for Array{Nothing, 1})
 
-julia> close(reader); reader = PAFReader(IOBuffer("bad data"));
+julia> close(reader); reader = PAFReader(IOBuffer("bad data\\n" * open(readline, path_to_paf)));
 
 julia> try_next!(reader) isa PAF.ParserException
 true
 
-julia> all(i -> try_next!(reader) isa PAF.ParserException, 1:100)
+julia> try_next!(reader) isa PAFRecord
+true
+
+julia> try_next!(reader) === nothing
 true
 ```
 """
@@ -861,15 +860,26 @@ function next_view!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserExceptio
     (buffer, last_index, line_len) = buffer_line(reader.io)
     line = @inbounds buffer[1:last_index]
     res = parse_line(line)
-    if res isa ParserException
-        # A whitespace-only line, which can never be a valid record, is the end of the
-        # stream if the rest of it is whitespace. Checking only on errors keeps the
-        # check off the hot path.
-        all(is_whitespace, line) && return check_tail(reader, buffer)
-        return ParserException(res.kind, getfield(res, :index_in_line), reader.line)
+    # A whitespace-only line, which can never be a valid record, is the end of the
+    # stream if the rest of it is whitespace. Checking only on errors keeps the
+    # check off the hot path.
+    if res isa ParserException && all(is_whitespace, line)
+        tail = check_tail(reader, buffer)
+        tail === nothing && return nothing
+        # Skip all the whitespace-only lines, and report the error at the first of them
+        (n_bytes, n_lines) = tail
+        err = ParserException(Errors.EmptyNonTailingLine, Int32(1), reader.line)
+        reader.to_consume = n_bytes
+        reader.line += n_lines
+        return err
     end
-    # Else, we update the reader. This means `next!` will continuously return
-    # an error if an error is found.
+    res = if res isa ParserException
+        ParserException(res.kind, getfield(res, :index_in_line), reader.line)
+    else
+        res
+    end
+    # Advance past the line, even if it is invalid, such that the next call
+    # continues from the next line
     reader.to_consume = line_len
     reader.line += 1
     return res
@@ -909,20 +919,24 @@ end
 is_whitespace(b::UInt8) = b ∈ (UInt8('\r'), UInt8('\n'), UInt8('\t'), UInt8(' '))
 
 # Called when the next line is whitespace-only, with `buffer` beginning at that line.
-# Return `nothing` if the rest of the stream is whitespace, else an error.
+# Return `nothing` if the rest of the stream is whitespace. Else, return the number of
+# bytes and lines of the whitespace-only lines before the first line with non-whitespace.
 # The buffer may end after the line, so keep filling it until EOF.
-function check_tail(reader::PAFReader, buffer::ImmutableMemoryView{UInt8})::Union{Nothing, ParserException}
+# This does not mutate `reader`, except by filling its buffer.
+function check_tail(reader::PAFReader, buffer::ImmutableMemoryView{UInt8})::Union{Nothing, Tuple{Int, Int}}
     io = reader.io
-    line = reader.line
-    col = 0
+    n_lines = 0
+    # Index of the first byte after the last newline seen
+    line_start = 1
     n_scanned = 0
     while true
-        @inbounds for b in buffer[(n_scanned + 1):end]
-            col += 1
-            line += b == UInt8('\n')
-            col *= b != UInt8('\n')
-            if !is_whitespace(b)
-                return ParserException(Errors.EmptyNonTailingLine, col % Int32, line)
+        for i in (n_scanned + 1):length(buffer)
+            b = @inbounds buffer[i]
+            if b == UInt8('\n')
+                n_lines += 1
+                line_start = i + 1
+            elseif !is_whitespace(b)
+                return (line_start - 1, n_lines)
             end
         end
         n_scanned = length(buffer)

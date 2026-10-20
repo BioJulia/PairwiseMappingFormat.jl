@@ -189,13 +189,11 @@ PairwiseMappingFormat.ParserException(PairwiseMappingFormat.Errors.TooFewFields,
 Similarly, the next record of a `PAFReader` may be obtained with the unexported [`try_next!`](@ref)
 function.
 This function will either:
-* Return `nothing` if the reader has no more records
-* Return a `ParserException` if the next record is invalid
-* Return a `PAFRecord` if there is another valid record.
-  Only in this case it will advance the position of the reader.
-
-In other words, if a call to [`try_next!`](@ref) returns `nothing` or a `ParserException`,
-any future calls will return the same value forever:
+* Return `nothing` if the reader has no more records. Any future calls will
+  also return `nothing`.
+* Return a `ParserException` if the next record is invalid, and advance the reader
+  past the invalid line. Hence, invalid lines can be skipped by ignoring the error.
+* Return a `PAFRecord` if there is another valid record, and advance the reader.
 
 ```jldoctest public; output = false
 reader = PAFReader(open(path_to_paf))
@@ -210,12 +208,13 @@ nothings = [try_next!(reader) for i in 1:10]
 
 close(reader)
 
-reader = PAFReader(IOBuffer("not a PAF record"))
+reader = PAFReader(IOBuffer("not a PAF record\n" * open(readline, path_to_paf)))
 err = try_next!(reader)
-
 @assert err isa PAF.ParserException
-err2 = try_next!(reader)
-@assert err == err2
+
+# The invalid line was skipped, so the next record can be read
+@assert try_next!(reader) isa PAFRecord
+@assert try_next!(reader) === nothing
 
 # output
 

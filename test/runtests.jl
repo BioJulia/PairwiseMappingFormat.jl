@@ -430,6 +430,51 @@ end
     @test try_next!(reader).kind == Errors.BadInteger
 end
 
+@testset "Skipping invalid lines" begin
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    kinds(results) = [r isa PAFRecord ? :record : (r.kind, r.line) for r in results]
+    function read_all(reader)
+        results = []
+        while (res = try_next!(reader)) !== nothing
+            push!(results, res)
+        end
+        return results
+    end
+
+    # try_next! advances past invalid lines
+    data = join([good, "bad", good, good * "\tx", good * " ", good], '\n')
+    @test kinds(read_all(PAFReader(IOBuffer(data)))) ==
+        [:record, (Errors.TooFewFields, 2), :record, :record, (Errors.BadInteger, 5), :record]
+
+    # Including a truncated last line, as from a killed job
+    reader = PAFReader(IOBuffer(good * "\n" * good[1:30]))
+    @test try_next!(reader) isa PAFRecord
+    @test try_next!(reader).line == 2
+    @test try_next!(reader) === nothing
+    @test isempty(reader)
+
+    # A run of whitespace-only lines followed by non-whitespace is one error,
+    # reported at the first whitespace-only line. Reading continues after the run.
+    data = good * "\n\n \r\n\t\n" * good * "\n\nbad\n\n"
+    @test kinds(read_all(PAFReader(IOBuffer(data)))) == [
+        :record, (Errors.EmptyNonTailingLine, 2), :record,
+        (Errors.EmptyNonTailingLine, 6), (Errors.TooFewFields, 7),
+    ]
+
+    # Iteration throws, but also advances, so it can be resumed after catching
+    reader = PAFReader(IOBuffer(join([good, "bad", good], '\n')))
+    @test iterate(reader) isa Tuple
+    @test_throws PairwiseMappingFormat.ParserException iterate(reader)
+    @test iterate(reader) isa Tuple
+    @test iterate(reader) === nothing
+
+    # Mixing iteration and try_next! gives the same results
+    reader = PAFReader(IOBuffer(join(["bad", "bad", good], '\n')))
+    @test_throws PairwiseMappingFormat.ParserException iterate(reader)
+    @test try_next!(reader).line == 2
+    @test only(collect(reader)).qname == "my_qname"
+end
+
 @testset "isempty" begin
     good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
 
@@ -472,16 +517,35 @@ end
         good * "\n\n" * good, good * "\nbad", good * "\n \n", good * "\n\r",
         good * "\n\r\r\n", " ", "\nV", good * "\n\n\n\nx",
         good * "\n \n" * good, good * "\n\t \r\n  ", " \tx", good * "\n \n\tx",
+        "bad\n" * good, good * "\nbad\n" * good * "\n", "bad\r\nbad\n\n \n" * good,
     ]
     # Empty chunks are not allowed, since fill_buffer returning zero signals EOF
     function chunkings(data)
         splits = [filter!(!isempty, [data[1:i], data[(i + 1):end]]) for i in 0:length(data)]
         return push!(splits, [string(c) for c in data])
     end
+    # Summarize the results of reading all of `reader`, continuing past errors.
+    # Each call must advance the reader, so the number of results is bounded.
+    function read_all(reader, max_results)
+        results = []
+        while (res = try_next!(reader)) !== nothing
+            push!(results, res isa PAFRecord ? copy(getfield(res, :data)) : res)
+            length(results) > max_results && error("Reader did not advance")
+        end
+        return results
+    end
+    for data in inputs
+        expected_results = read_all(PAFReader(IOBuffer(data)), ncodeunits(data))
+        for chunks in chunkings(data)
+            @test read_all(PAFReader(ChunkReader(chunks)), ncodeunits(data)) == expected_results
+        end
+    end
+
     for data in inputs, chunks in chunkings(data), copy in (true, false)
         # isdone and isempty agree with try_next!, and isdone never invalidates
         # the record returned by try_next!. With copy=true, no view is live, so
         # isdone is never missing, and isempty does not invalidate the record either.
+        # Reading continues past errors.
         reader = PAFReader(ChunkReader(chunks); copy)
         (rec, expected) = (nothing, nothing)
         while true
@@ -493,8 +557,8 @@ end
             maybe_done === missing || @test maybe_done == done
             res = try_next!(reader)
             @test done == (res === nothing)
-            res isa PAFRecord || break
-            (rec, expected) = (res, Base.copy(res))
+            res === nothing && break
+            (rec, expected) = res isa PAFRecord ? (res, Base.copy(res)) : (nothing, nothing)
         end
 
         # When iterating with copy=true, no view is live, so isdone is never missing
@@ -509,7 +573,7 @@ end
                 e
             end
             @test done == (it === nothing)
-            it isa Tuple || break
+            it === nothing && break
         end
     end
 end
