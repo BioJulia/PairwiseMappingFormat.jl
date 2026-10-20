@@ -303,6 +303,37 @@ end
     @test (rec.qstart, rec.qend) == (Int(m) + 1, m)
 end
 
+@testset "Integer parsing" begin
+    # Integers are parsed 8 bytes at a time, unless they have more than 7 digits,
+    # or are close to the end of the line. Test both cases for all digit counts.
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    m = Int(typemax(UInt32))
+    alnlen(x) = x isa PAFRecord ? x.alnlen : x
+    for n_digits in 1:11, n_zeros in 0:9
+        s = "0"^n_zeros * first("9182736450918273645", n_digits)
+        n = parse(Int, s)
+        expected = n > m ? Errors.IntegerOverflow : n
+        # alnlen is close to the end of the line, except when there is aux data
+        @test alnlen(with_replaced(good, 11, s)) == expected
+        @test alnlen(with_replaced(good * "\tcm:i:1", 11, s)) == expected
+        # Same with a bad byte after the integer
+        @test with_replaced(good, 11, s * "/") == (n > m ? Errors.IntegerOverflow : Errors.BadInteger)
+    end
+
+    # A bad byte at every position of an integer, including bytes which may carry
+    # into the next byte when adding to them.
+    for n_digits in 1:12, pos in 1:n_digits, bad in (0x2f, 0x3a, 0x20, 0x00, 0xfa, 0xff, UInt8('a'))
+        bytes = collect(codeunits(first("123456789123", n_digits)))
+        bytes[pos] = bad
+        s = String(bytes)
+        for field in (10, 11, 12)
+            # 1234567891 fits in an UInt32, so only 11 digits overflow before the bad byte
+            expected = pos > 11 ? Errors.IntegerOverflow : Errors.BadInteger
+            @test with_replaced(good, field, s) == expected
+        end
+    end
+end
+
 @testset "Empty intervals" begin
     # Empty intervals are accepted anywhere within the sequence, including at its
     # start and end. They become empty one-based ranges.
