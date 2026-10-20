@@ -552,6 +552,55 @@ end
     @test only(collect(reader)).qname == "my_qname"
 end
 
+@testset "peek" begin
+    good = open(readline, joinpath(@__DIR__, "example.paf"))
+    other = replace(good, "query1" => "other")
+    data = good * "\nbad\n\n  \n" * other * "\r\n\n \n"
+    results(r) = r isa PAFRecord ? String(r) : r isa PairwiseMappingFormat.ParserException ? (r.kind, r.line) : r
+    expected = PAFReader(IOBuffer(data)) do reader
+        out = []
+        while true
+            res = try_next!(reader)
+            push!(out, results(res))
+            res === nothing && return out
+        end
+    end
+    @test length(expected) == 5 # good, bad, empty non-tailing line, other, nothing
+
+    for copy in (true, false), chunk in (1, 3, 1000), n_peeks in (0, 1, 2)
+        chunks = [data[i:min(end, i + chunk - 1)] for i in 1:chunk:lastindex(data)]
+        reader = PAFReader(ChunkReader(chunks); copy)
+        for exp in expected
+            for _ in 1:n_peeks
+                @test results(peek(reader)) == exp
+            end
+            @test results(try_next!(reader)) == exp
+        end
+        @test peek(reader) === nothing
+        @test isempty(reader)
+    end
+
+    # A peeked record is valid until the reader is advanced, also with copy=false
+    PAFReader(IOBuffer(good * "\n" * other); copy = false) do reader
+        rec = peek(reader)
+        @test !isempty(reader)
+        @test Base.isdone(reader) === false
+        @test String(rec) == good
+        @test String(try_next!(reader)) == good
+        @test String(peek(reader)) == other
+        @test String(try_next!(reader)) == other
+        @test peek(reader) === nothing
+    end
+
+    # With copy=true, peeked records own their data
+    PAFReader(IOBuffer(good * "\n" * other)) do reader
+        rec = peek(reader)
+        try_next!(reader)
+        try_next!(reader)
+        @test String(rec) == good
+    end
+end
+
 @testset "isempty" begin
     good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
 
