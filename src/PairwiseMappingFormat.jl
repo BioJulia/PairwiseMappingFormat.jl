@@ -692,18 +692,61 @@ function parse_str(
     end
 end
 
-# TODO: 40% of runtime is spent in this function. Microoptimize it
+# Return the number of leading bytes of `x` (in memory order) which are ASCII digits,
+# from 0 to 8, where `x` is 8 bytes loaded as little-endian.
+function n_leading_digits(x::UInt64)::Int
+    # A byte b is a digit iff the high nibbles of both b and b + 6 are 3.
+    # Adding 6 may carry into the next byte if b >= 0xfa, but that only corrupts bytes
+    # after a non-digit, which are not counted.
+    t = (x & 0xf0f0f0f0f0f0f0f0) | (((x + 0x0606060606060606) & 0xf0f0f0f0f0f0f0f0) >> 4)
+    return trailing_zeros(t ⊻ 0x3333333333333333) >>> 3
+end
+
+# Compute the value of the first `nd` digits of `x`, with `nd` in 0:8, and `x`
+# as in `n_leading_digits`.
+function swar_digits(x::UInt64, nd::Int)::Int
+    # Subtracting may borrow from bytes after the digits, which are shifted out.
+    # Shifting moves the digits to the most significant bytes, with zeros in front.
+    x = (x - 0x3030303030303030) << ((8 - nd) << 3)
+    x = ((x * 10) + (x >> 8)) & 0x00ff00ff00ff00ff
+    x = ((x * 100) + (x >> 16)) & 0x0000ffff0000ffff
+    x = ((x * 10000) + (x >> 32)) & 0x00000000ffffffff
+    return x % Int
+end
+
+# Load 8 bytes beginning at index i as little-endian. Index i + 7 must be in bounds.
+function load_u64(v::ImmutableMemoryView{UInt8}, i::Int)::UInt64
+    return GC.@preserve v ltoh(unsafe_load(Ptr{UInt64}(pointer(v, i))))
+end
+
 function parse_int(
         v::ImmutableMemoryView{UInt8},
         from::Int,
         allow_zero::Bool,
         at_end::Bool = false,
     )::Union{Tuple{Int, Int}, ParserException}
-    # Accumulate in an Int, which can't overflow because we check against
-    # typemax(UInt32) after every digit. The result therefore fits in an UInt32.
+    # Fast path: Parse integers of up to 7 digits from 8 bytes at once, avoiding a
+    # data-dependent loop. Longer integers, i.e. >= 10 Mbp, continue in the loop below.
+    # A similar second fast path for 8-10 digits was measured to be slower.
     n = 0
-    i = from
-    for outer i in from:lastindex(v)
+    start = from
+    if from + 7 <= lastindex(v)
+        x = load_u64(v, from)
+        nd = n_leading_digits(x)
+        n = swar_digits(x, nd)
+        if nd < 8
+            # The byte after the digits is in bounds, since there are 8 bytes
+            i = from + nd
+            @inbounds(v[i]) == UInt8('\t') || return ParserException(i % Int32, Errors.BadInteger)
+            iszero(nd) && return ParserException(i % Int32, Errors.EmptyInteger)
+            (!allow_zero & iszero(n)) && return ParserException(i % Int32, Errors.InvalidZero)
+            return (n, i + 1)
+        end
+        start = from + 8
+    end
+    # Slow path. Accumulate in an Int, which can't overflow because we check against
+    # typemax(UInt32) after every digit. The result therefore fits in an UInt32.
+    for i in start:lastindex(v)
         b = @inbounds v[i]
         # If we hit a tab, this field is over.
         if b == UInt8('\t')
@@ -724,9 +767,9 @@ function parse_int(
     return if !at_end
         ParserException(lastindex(v) % Int32, Errors.TooFewFields)
     elseif from > lastindex(v)
-        ParserException(i % Int32, Errors.EmptyInteger)
+        ParserException(from % Int32, Errors.EmptyInteger)
     else
-        (n, i + 1)
+        (n, lastindex(v) + 1)
     end
 end
 
@@ -946,7 +989,9 @@ function next_view!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserExceptio
     consume_previous!(reader)
     (buffer, last_index, line_len) = buffer_line(reader.io)
     line = @inbounds buffer[1:last_index]
-    res = parse_line(line)
+    # Inlining avoids returning the record through a union in memory, and copying it.
+    # This was measured to make the reader about 8% faster.
+    res = @inline parse_line(line)
     # A whitespace-only line, which can never be a valid record, is the end of the
     # stream if the rest of it is whitespace. Checking only on errors keeps the
     # check off the hot path.
