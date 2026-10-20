@@ -81,6 +81,30 @@ end
     end
 end
 
+@testset "Raw line" begin
+    line = "q\t10\t0\t5\t+\tt\t20\t5\t10\t5\t5\t60\tab:Z:x"
+    for input in (line * "\n", line * "\r\n", line)
+        rec = parse(PAFRecord, input)
+        @test MemoryView(rec) isa ImmutableMemoryView{UInt8}
+        @test MemoryView(rec) == codeunits(line)
+        @test String(rec) isa String
+        @test String(rec) == line
+        @test string(rec) isa String
+        @test string(rec) == line
+        @test sprint(print, rec) == line
+    end
+    unmapped = "read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0"
+    @test String(parse(PAFRecord, unmapped)) == unmapped
+
+    # String and string copy the data, MemoryView does not
+    data = collect(codeunits(line))
+    rec = parse(PAFRecord, data)
+    (s1, s2, mem) = (String(rec), string(rec), MemoryView(rec))
+    data[1] = UInt8('Q')
+    @test s1 == s2 == line
+    @test first(mem) == UInt8('Q')
+end
+
 @testset "Coverage and identity" begin
     function get_rec(qlen::Int, tlen::Int, matches::Int, alnlen::Int)
         fields = split(

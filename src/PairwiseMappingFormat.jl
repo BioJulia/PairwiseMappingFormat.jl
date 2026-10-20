@@ -22,7 +22,7 @@ using PrecompileTools: @compile_workload, @setup_workload, @recompile_invalidati
     using StringViews: StringView
 end
 
-using MemoryViews: ImmutableMemoryView
+using MemoryViews: MemoryViews, ImmutableMemoryView
 
 using XAMAuxData.SAM: Auxiliary
 using BufferIO: AbstractBufReader, BufReader, ExpandReader, get_buffer, fill_buffer, consume
@@ -46,6 +46,9 @@ julia> record.qname
 
 julia> record.qlen
 301156
+
+julia> startswith(String(record), "query1\t301156\t")
+true
 ```
 
 See also: [`PAFReader`](@ref)
@@ -73,6 +76,13 @@ Use [`is_mapped`](@ref) to check if a record is mapped.
   this information is unavailable.
 * `is_rc::Bool` tells if the query and target strands are reverse-complement
   relative to each other.
+
+The line the record was parsed from, without the trailing newline, can be obtained
+with `MemoryView(record)`, which returns an `ImmutableMemoryView{UInt8}` view of the
+record's data, or `String(record)`, which copies it into a new `String`.
+Unlike `MemoryView`, `String` and `string` do not alias the record's memory, so they
+remain valid if the underlying memory is mutated.
+For a non-copying string, use `StringView(MemoryView(record))`.
 """
 struct PAFRecord
     # The line the record was parsed from, without the trailing newline.
@@ -261,6 +271,11 @@ function tname(record::PAFRecord)
     span = start:(start + getfield(record, :tname_len) - 1)
     return StringView(getfield(record, :data)[span])
 end
+
+# The original line, without the trailing newline
+MemoryViews.MemoryView(record::PAFRecord) = getfield(record, :data)
+Base.String(record::PAFRecord) = String(getfield(record, :data))
+Base.print(io::IO, record::PAFRecord) = (write(io, getfield(record, :data)); nothing)
 
 # Note: We return nothing instead of missing because fuck missing
 function mapq(record::PAFRecord)::Union{Int, Nothing}
