@@ -20,9 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of owning a copy of the data:
   - With `copy=false`, the record iterated by `PAFReader` and returned by `try_next!`
     is a view into the reader's buffer, and is invalidated when the reader is advanced.
+    Using an invalidated record is not detected.
   - `try_parse` and `parse` return a view into the input, so mutating the input
     also mutates the record.
   - `copy(record)` returns a record that owns its data.
+- **Breaking:** `try_next!` now respects the `copy` keyword of `PAFReader`. With the default
+  `copy=true`, it returns a new record which owns its data.
 - **Breaking:** `PAFRecord` is now immutable. With `copy=false`, iterating a `PAFReader`
   no longer returns the same object on each iteration, but a new record each time.
   On Julia versions before 1.14, returning a `PAFRecord` from a non-inlined function,
@@ -47,6 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `isempty(reader)` no longer consumes a record from a `PAFReader`. It may invalidate
   the most recently returned record if that record is a view into the reader's buffer,
-  i.e. if it was returned by `try_next!`, or iterated with `copy=false`.
+  i.e. if the reader was constructed with `copy=false`.
   `PAFReader` now implements `Base.isdone`, which never invalidates records, and returns
   `missing` when it can't determine whether the reader is done without doing so.
