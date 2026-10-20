@@ -16,14 +16,15 @@ which is a simple tab-delimited format used by e.g. minimap2 and strobealign
 to store records representing pairwise alignment between biological sequences.
 
 ## Reader
-The [`PAFReader`](@ref) type wraps an `IO`, and is an iterator of [`PAFRecord`](@ref) objects:
+The [`PAFReader`](@ref) type wraps an `IO` or a `BufferIO.AbstractBufReader`,
+and is an iterator of [`PAFRecord`](@ref) objects:
 
 ```jldoctest; output = false
 reader = PAFReader(open(path_to_paf))
 records = collect(reader)
+@assert isempty(reader)
 close(reader)
 
-@assert isempty(reader)
 @assert typeof(records) == Vector{PAFRecord}
 
 # output
@@ -46,23 +47,25 @@ julia> PAFReader(open(path_to_paf)) do reader
 ```
 
 The [`PAFReader`](@ref) constructor takes an optional keyword `copy`, which defaults to `true`.
-If it is `false`, the record will iterate the _same_ [`PAFRecord`](@ref) object, overwriting
-it in-place.
-This reduces allocations and gives a slight speed increase, but may result in bugs
-if records, or references of records of previous iterations are stored and
-unexpectedly overwritten:
+If it is `false`, the [`PAFRecord`](@ref)s returned by iterating the reader, or by
+[`try_next!`](@ref), are views into the reader's buffer, instead of owning a copy of their data.
+Such a record is only valid until the reader is advanced, or otherwise mutated, which
+may happen by other non-advancing calls such as `peek` or `isempty` on the reader.
+This reduces allocations and copying and gives a slight speed increase, but may result
+in bugs if records from previous iterations are stored.
+Use `copy` on a record to obtain a record that owns its data:
 
 ```jldoctest
-julia> records = PAFReader(collect, open(path_to_paf); copy=false);
-
-julia> println(map(i -> i.qlen, records)) # NB: All the same record!
-[288659, 288659, 288659]
+julia> PAFReader(open(path_to_paf); copy=false) do reader
+           [copy(record) for record in reader if record.qlen > 290000]
+       end |> length
+2
 ```
 
 At the moments, readers do not support seeking.
 
 ## Record
-The mutable [`PAFRecord`](@ref) object represents a single line in a PAF file.
+The [`PAFRecord`](@ref) object represents a single line in a PAF file.
 The individual columns of the PAF line is obtained by accessing properties of the records:
 
 ```jldoctest record
@@ -87,27 +90,31 @@ underlying fields as they are stored in the `PAFRecord`.
   Names of the query sequences
   When the sequences are from a FASTA file, this is typically the _identifier_ of the
   FASTA records, i.e. the part of the header before the first space.
-* `tname::Union{Nothing, StringView{A}}`. Same as `qname`, but for the target (i.e. subject)
-  sequence. May be `nothing` if the record is unmapped.
+* `tname::StringView{A}`. Same as `qname`, but for the target (i.e. subject)
+  sequence.
 * `qlen` and `tlen`. Of type `Int`. Length of the full query and target sequence.
+  Lengths and positions up to `typemax(UInt32)`, about 4.3 Gbp, are supported.
 * `qstart` and `tstart`. Of type `Int`. Leftmost (i.e. lowest) position of the alignment
   in the query and target, respectively. This does not take strandedness into account.
 * `qend` and `tend`. Of type `Int`. Rightmost (i.e. highest) position of the alignment
   in the query and target, respectively. This does not take strandedness into account.
-  As such, we always have `record.qend - record.qtart) >= 0`, and likewise for the target.
+  The interval may be empty, in which case `record.qstart:record.qend` is an empty range.
+  As such, we always have `record.qend - record.qstart >= -1`, and likewise for the target.
 * `alnlen::Int`. Length of alignment. That includes gaps in query and target, and may therefore
   not match either `qend - qstart + 1`, or that of the target.
 * `matches::Int`. Number of residue matches (not mismatches) in the alignment.
-  `matches / alnlen` is the alignment identity and is between 0 and 1.
+  `matches / alnlen` is the alignment identity, which is between 0 and 1 for well-formed
+  records. The parser does not check that `matches <= alnlen`, or that `alnlen > 0`.
+  See [`aln_identity`](@ref).
 * `mapq::Union{Int, Nothing}`. Mapping quality, from 0:254, where 254 is the better quality.
   When calibrated, the probability the mapping is correct should be 10^(-mapq / 10).
   A value of `nothing` indicates the mapping quality is unavailable.
-* `is_rc::Union{Bool, Nothing}` indicates whether the alignment matches the target on the forward (`false`) or reverse-complement `true` strand. A missing alignment is `nothing`.
+* `is_rc::Bool` indicates whether the alignment matches the target on the forward (`false`) or reverse-complement `true` strand.
 
 The PAF format does not contain fields for alignment identity, query coverage
 or target coverage.
 However, these can be approximated with the functions [`aln_identity`](@ref),
-[`query_coverage`](@ref) and [`query_coverage`](@ref).
+[`query_coverage`](@ref) and [`target_coverage`](@ref).
 
 Besides being iterated from [`PAFReader`](@ref), records can also be created by
 parsing from a bytes-like object such as a `String`:
@@ -122,41 +129,34 @@ record = parse(PAFRecord, data)
 
 ```
 
-Rarely, PAF records are unmapped. An unmapped record contain the query id, the query length, and any [auxiliary fields](@ref aux).
-The target name and the strand of an unmapped return is `nothing`.
-You can check if a record is mapped or unmapped with the function `is_mapped`:
+Some PAF records are unmapped, for example those written by minimap2 with the
+`--paf-no-hit` flag. An unmapped record only contains the query name, the query length,
+and any [auxiliary fields](@ref aux).
+You can check if a record is mapped or unmapped with the function [`is_mapped`](@ref):
 
 ```jldoctest unmapped
-julia> unmapped = parse(PAFRecord, "myquery\t5032251\t9\t11\t*\t*\t5\t2\t1\t7\t4\t0");
+julia> unmapped = parse(PAFRecord, "myquery\t5032251\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0");
 
-julia> @assert !is_mapped(unmapped)
+julia> is_mapped(unmapped)
+false
 
 julia> println(unmapped.qname)
 myquery
 
 julia> println(unmapped.qlen)
 5032251
-
-julia> @assert isnothing(unmapped.tname)
-
-julia> # The strand is given by is_rc, and is nothing for unmapped records
-       @assert isnothing(unmapped.is_rc)
 ```
 
-All other properties of unmapped records may contain arbitrary data, and should not be relied on.
-For this reason, the functions [`target_coverage`](@ref), [`query_coverage`](@ref) and [`aln_identity`](@ref)
-may give nonsense answers for unmapped records:
+Accessing any other property of an unmapped record throws a [`PairwiseMappingFormat.UnmappedError`](@ref),
+as does calling [`target_coverage`](@ref), [`query_coverage`](@ref) or [`aln_identity`](@ref) on it:
 ```jldoctest unmapped
-julia> # Note! These results are arbitrary and not guaranteed to be stable
-       # across minor releases of this package
-       println(target_coverage(unmapped))
-Inf
+julia> unmapped.tname
+ERROR: UnmappedError: Cannot get `tname` of an unmapped PAFRecord. Check `is_mapped` first.
+[...]
 
-julia> println(query_coverage(unmapped))
-1.9871822768776836e-7
-
-julia> println(aln_identity(unmapped))
-NaN
+julia> query_coverage(unmapped)
+ERROR: UnmappedError: Cannot get `query_coverage` of an unmapped PAFRecord. Check `is_mapped` first.
+[...]
 ```
 
 ## Low-level interface
@@ -167,7 +167,7 @@ ERROR: Error when parsing PAF record on line 1, near byte number 14 in line: Not
 [...]
 ```
 
-In some circuomstances, throwing exceptions may not be acceptable, and so PairwiseMappingFormat.jl
+In some circumstances, throwing exceptions may not be acceptable, and so PairwiseMappingFormat.jl
 provide functionality for returning errors as values.
 These values can then be checked to programmatically handle error states.
 
@@ -182,16 +182,14 @@ julia> println(PAF.try_parse("not a PAF line"))
 PairwiseMappingFormat.ParserException(PairwiseMappingFormat.Errors.TooFewFields, 14, 1)
 ```
 
-Similarly, the next record of a `PAFReader` may be obtained with the unexported [`try_next!`](@ref)
+Similarly, the next record of a `PAFReader` may be obtained with the [`try_next!`](@ref)
 function.
 This function will either:
-* Return `nothing` if the reader has no more records
-* Return a `ParserException` if the next record is invalid
-* Return a `PAFRecord` if there is another valid record.
-  Only in this case it will advance the position of the reader.
-
-In other words, if a call to [`try_next!`](@ref) returns `nothing` or a `ParserException`,
-any future calls will return the same value forever:
+* Return `nothing` if the reader has no more records. Any future calls will
+  also return `nothing`.
+* Return a `ParserException` if the next record is invalid, and advance the reader
+  past the invalid line. Hence, invalid lines can be skipped by ignoring the error.
+* Return a `PAFRecord` if there is another valid record, and advance the reader.
 
 ```jldoctest public; output = false
 reader = PAFReader(open(path_to_paf))
@@ -206,12 +204,13 @@ nothings = [try_next!(reader) for i in 1:10]
 
 close(reader)
 
-reader = PAFReader(IOBuffer("not a PAF record"))
+reader = PAFReader(IOBuffer("not a PAF record\n" * open(readline, path_to_paf)))
 err = try_next!(reader)
-
 @assert err isa PAF.ParserException
-err2 = try_next!(reader)
-@assert err == err2
+
+# The invalid line was skipped, so the next record can be read
+@assert try_next!(reader) isa PAFRecord
+@assert try_next!(reader) === nothing
 
 # output
 
@@ -228,9 +227,16 @@ julia> err.kind
 TooFewFields::Err = 0
 ```
 
-The precise value of this `.kind` object for any given error condition is subject
-to change across minor versions and new values may be introduced.
-This is because the same error may be detected in multiple different ways.
+The `.kind` is intended for diagnostics, such as logging or counting errors, and should
+not be relied on to handle errors programmatically.
+An invalid line is often invalid in several ways, and which of them is reported depends
+on implementation details. Therefore, the kind reported for a given invalid input is
+deterministic within a version of this package, but may change in any minor release,
+and new kinds may be added.
+In contrast, whether input is rejected, and the line the error is reported on, are stable.
+
+The error message also includes the approximate position of the error within the line.
+This position is only meant for humans to read, and is not part of the API.
 
 ## [Auxiliary fields](@id aux)
 [`PAFRecord`](@ref)s may contain extra auxiliary fields at the end of the records,
@@ -266,19 +272,15 @@ julia> aux["km"]
 
 julia> haskey(aux, "cm")
 true
-
-julia> aux["AB"] = 5.5;
-
-julia> haskey(aux, "AB")
-true
 ```
 
 ## Misc info
-* The `PAFReader` cannot handle trailing whitespace, except trailing newlines at
-  the end of the file. This is because trailing whitespace may be significant
-  in some records, e.g. if it ends with an auxiliary field of the element type
-  `Z`.
-  A PAF record with trailing whitespace is considered invalid.
+* Lines end with `\n` or `\r\n`. Other whitespace at the end of a record is not
+  stripped, because it may be significant, e.g. if the record ends with an auxiliary
+  field of the element type `Z`. Instead, it is part of the last field, and may make it
+  invalid.
+* The first line in a file consisting only of whitespace marks the end of the records.
+  All remaining input must then be whitespace.
 
 
 ## Reference
@@ -291,8 +293,12 @@ aln_identity
 query_coverage
 target_coverage
 try_next!
+Base.isempty(::PAFReader)
+Base.peek(::PAFReader)
 is_mapped
 PairwiseMappingFormat.Errors
 PairwiseMappingFormat.try_parse
+Base.parse(::Type{PAFRecord}, ::Any)
 PairwiseMappingFormat.ParserException
+PairwiseMappingFormat.UnmappedError
 ```

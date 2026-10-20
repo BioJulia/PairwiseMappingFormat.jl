@@ -6,7 +6,26 @@ using Test
 using FormatSpecimens
 using MemoryViews
 using Aqua
+using BufferIO: CursorReader, AbstractBufReader
+import BufferIO: get_buffer, fill_buffer, consume
 
+# A reader that delivers data in fixed chunks, like a pipe would
+mutable struct ChunkReader <: AbstractBufReader
+    chunks::Vector{Vector{UInt8}}
+    buf::Vector{UInt8}
+end
+ChunkReader(chunks) = ChunkReader(map(c -> collect(codeunits(c)), chunks), UInt8[])
+get_buffer(r::ChunkReader) = ImmutableMemoryView(r.buf)
+function fill_buffer(r::ChunkReader)
+    isempty(r.chunks) && return 0
+    c = popfirst!(r.chunks)
+    append!(r.buf, c)
+    return length(c)
+end
+consume(r::ChunkReader, n::Int) = (deleteat!(r.buf, 1:n); nothing)
+Base.close(::ChunkReader) = nothing
+
+using XAMAuxData: XAMAuxData
 using XAMAuxData.SAM: AuxTag
 
 function cmp_aux(record::PAFRecord, other)
@@ -15,7 +34,7 @@ function cmp_aux(record::PAFRecord, other)
     @test length(aux) == length(other)
     for ((kaux, vaux), (ko, vo)) in zip(aux, other)
         @test kaux == AuxTag(ko)
-        if vaux isa Union{Real, AbstractString, Char}
+        if vaux isa Union{Real, AbstractString, Char, XAMAuxData.Error}
             @test vaux == vo
         elseif vaux isa AbstractVector
             @test eltype(vaux) == eltype(vo)
@@ -44,6 +63,10 @@ end
         @test rec1.alnlen == 301142
         @test rec1.mapq == 0
 
+        # tname and is_rc are type stable, since they throw for unmapped records
+        @test (@inferred (r -> r.tname)(rec1)) isa AbstractString
+        @test (@inferred (r -> r.is_rc)(rec1)) isa Bool
+
         @test_throws Exception rec1.foobar
         @test_throws Exception rec1.strand
         @test_throws Exception rec1.data
@@ -56,6 +79,54 @@ end
         cmp_aux(rec2, ["tp" => 'P', "cm" => 29957, "s1" => 299269, "s2" => 299269, "dv" => 0, "rl" => 38])
         cmp_aux(rec3, ["tp" => 'P', "cm" => 28871, "s1" => 288618, "s2" => 288618, "dv" => 0, "rl" => 57])
     end
+end
+
+@testset "Raw line" begin
+    line = "q\t10\t0\t5\t+\tt\t20\t5\t10\t5\t5\t60\tab:Z:x"
+    for input in (line * "\n", line * "\r\n", line)
+        rec = parse(PAFRecord, input)
+        @test MemoryView(rec) isa ImmutableMemoryView{UInt8}
+        @test MemoryView(rec) == codeunits(line)
+        @test String(rec) isa String
+        @test String(rec) == line
+        @test string(rec) isa String
+        @test string(rec) == line
+        @test sprint(print, rec) == line
+    end
+    unmapped = "read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0"
+    @test String(parse(PAFRecord, unmapped)) == unmapped
+
+    # String and string copy the data, MemoryView does not
+    data = collect(codeunits(line))
+    rec = parse(PAFRecord, data)
+    (s1, s2, mem) = (String(rec), string(rec), MemoryView(rec))
+    data[1] = UInt8('Q')
+    @test s1 == s2 == line
+    @test first(mem) == UInt8('Q')
+end
+
+@testset "Equality and hashing" begin
+    line = "q\t10\t0\t5\t+\tt\t20\t5\t10\t5\t5\t60\tab:Z:x"
+    a = parse(PAFRecord, line)
+    for b in (
+            parse(PAFRecord, line * "\n"),
+            parse(PAFRecord, line * "\r\n"),
+            parse(PAFRecord, collect(codeunits(line))),
+            copy(a),
+        )
+        @test a == b
+        @test isequal(a, b)
+        @test hash(a) == hash(b)
+    end
+    c = parse(PAFRecord, line * "\tcd:i:1")
+    @test a != c
+    @test hash(a) != hash(c)
+    @test hash(a) != hash(line)
+    @test length(Set([a, copy(a), c])) == 2
+
+    unmapped = "read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0"
+    @test parse(PAFRecord, unmapped) == parse(PAFRecord, unmapped * "\n")
+    @test parse(PAFRecord, unmapped) != a
 end
 
 @testset "Coverage and identity" begin
@@ -83,6 +154,17 @@ end
     @test isapprox(target_coverage(get_rec(17, 16, 15, 16)), 6 / 16)
 end
 
+function with_replaced_str(s::String, field::Integer, new::String)
+    fields = split(s, '\t')
+    fields[field] = new
+    return join(fields, "\t")
+end
+
+function with_replaced(s::String, field::Integer, new::String)
+    y = try_parse(with_replaced_str(s, field, new))
+    return y isa PairwiseMappingFormat.ParserException ? y.kind : y
+end
+
 @testset "Edge case records" begin
     (rec1, rec2, rec3) = PAFReader(open(joinpath(path_of_format("PAF"), "good2.paf"))) do reader
         y = first(reader, 3)
@@ -91,15 +173,21 @@ end
     end
     @test rec1.qname == "中国科学院大学"
     @test rec1.qlen == typemax(Int32)
-    cmp_aux(rec1, ["tp" => 'S', "cm" => 29990, "s1" => 301142, "dv" => -13.2442f-18, "rl" => 0, "xX" => [0xea, 0x19, 0xfe, 0x1b], "K1" => Int8[15, 9, 22, 127, -12, -128, 0]])
+    # XAMAuxData 0.2 rejects lowercase hex digits
+    xX = pkgversion(XAMAuxData) < v"0.2" ? [0xea, 0x19, 0xfe, 0x1b] : XAMAuxData.Errors.InvalidHex
+    cmp_aux(rec1, ["tp" => 'S', "cm" => 29990, "s1" => 301142, "dv" => -13.2442f-18, "rl" => 0, "xX" => xX, "K1" => Int8[15, 9, 22, 127, -12, -128, 0]])
     cmp_aux(rec2, ["dv" => 1.243f-4, "rl" => 38, "kk" => "!=[]! And then~~  "])
     cmp_aux(rec3, ["dv" => +17.0f21, "rl" => 38])
 
     # Empty record
     rec = PAFReader(first, open(joinpath(path_of_format("PAF"), "good3.paf")))
-    @test isnothing(rec.tname)
-    @test isnothing(rec.is_rc)
     @test !is_mapped(rec)
+    for sym in (:tname, :is_rc, :mapq, :qstart, :qend, :tlen, :tstart, :tend, :matches, :alnlen)
+        @test_throws PairwiseMappingFormat.UnmappedError(sym) getproperty(rec, sym)
+    end
+    for f in (query_coverage, target_coverage, aln_identity)
+        @test_throws PairwiseMappingFormat.UnmappedError(Symbol(f)) f(rec)
+    end
     @test rec.qname == "query"
     @test rec.qlen == 56
     @test Dict(aux_data(rec)) == Dict{AuxTag, Any}(
@@ -110,15 +198,38 @@ end
         "rl" => 0,
     )
 
+    # Unmapped record as written by minimap2 --paf-no-hit, with zeros
+    rec = parse(PAFRecord, "read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0")
+    @test !is_mapped(rec)
+    @test rec.qname == "read1"
+    @test rec.qlen == 1523
+
     # Unmapped record with too few fieds
     @test try_parse("query\t123\t1\t100\t*\t*\t5\t19").kind == Errors.TooFewFields
-end
 
-function with_replaced(s::String, field::Integer, new::String)
-    fields = split(s, '\t')
-    fields[field] = new
-    y = try_parse(join(fields, "\t"))
-    return y isa PairwiseMappingFormat.ParserException ? y.kind : y
+    # The fields of unmapped records are validated like for mapped records,
+    # except that integers may be zero
+    unmapped = "read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0"
+    for field in 6:12
+        @test with_replaced(unmapped, field, "0") isa PAFRecord
+    end
+    # Use a longer target name, so emptying a field does not make the line too short
+    long_unmapped = with_replaced_str(unmapped, 6, "some_target_name")
+    for field in 7:12
+        @test with_replaced(long_unmapped, field, "") == Errors.EmptyInteger
+        @test with_replaced(unmapped, field, "-1") == Errors.BadInteger
+        @test with_replaced(unmapped, field, "abc") == Errors.BadInteger
+        @test with_replaced(unmapped, field, "4294967296") == Errors.IntegerOverflow
+    end
+    @test with_replaced(unmapped, 12, "255") isa PAFRecord
+    @test with_replaced(unmapped, 12, "256") == Errors.IntegerOverflow
+    @test with_replaced(unmapped, 9, "1") == Errors.PositionOutOfBounds
+    @test try_parse("read1\t1523\t0\t0\t*\t*\t10\t5\t4\t0\t0\t0").kind == Errors.BackwardsIndices
+    @test try_parse("read1\t1523\t0\t0\t*\t*\t10\t0\t5\t0\t0\t0") isa PAFRecord
+    @test try_parse("read1\t1523\t0\t0\t*x*\t10\t0\t5\t0\t0\t0").kind == Errors.TooFewFields
+    # Aux data is found after the mapq field
+    rec = try_parse("read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0\tcm:i:4")
+    @test Dict(aux_data(rec)) == Dict{AuxTag, Any}("cm" => 4)
 end
 
 @testset "Errors" begin
@@ -132,9 +243,13 @@ end
         @test with_replaced(good, allow_zero, "0") isa PAFRecord
     end
 
-    for not_allow_zero in [2, 4, 7, 9]
+    for not_allow_zero in [2, 7]
         @test with_replaced(good, not_allow_zero, "0") == Errors.InvalidZero
     end
+
+    # Ends may be zero, but only if the start is too, giving an empty interval
+    @test with_replaced(good, 4, "0") == Errors.BackwardsIndices
+    @test with_replaced(good, 9, "0") == Errors.BackwardsIndices
 
     # qend and tend must be >= qstart tstart
     @test with_replaced(good, 3, "1000000") == Errors.BackwardsIndices
@@ -166,6 +281,82 @@ end
 
     # Mapq too high
     @test with_replaced(good, 12, "256") == Errors.IntegerOverflow
+
+    # Integer overflow, including on the last digit
+    @test with_replaced(good, 10, "4294967295").matches == typemax(UInt32)
+    @test with_replaced(good, 10, "4294967296") == Errors.IntegerOverflow
+    @test with_replaced(good, 10, "9999999999") == Errors.IntegerOverflow
+    @test with_replaced(good, 10, "99999999999999999999") == Errors.IntegerOverflow
+    @test with_replaced(good, 12, "4294967296") == Errors.IntegerOverflow
+    @test with_replaced(good, 2, "4294967296") == Errors.IntegerOverflow
+
+    # Sequences longer than typemax(Int32), up to typemax(UInt32)
+    m = typemax(UInt32)
+    rec = try_parse("q\t$m\t$(m - 1)\t$m\t+\tt\t$m\t0\t$m\t1\t1\t0")
+    @test (rec.qlen, rec.qstart, rec.qend) == (m, m, m)
+    @test (rec.tlen, rec.tstart, rec.tend) == (m, 1, m)
+    @test query_coverage(rec) == 1 / m
+    @test target_coverage(rec) == 1.0
+
+    # Empty interval at the very end of the sequence doesn't overflow
+    rec = try_parse("q\t$m\t$m\t$m\t+\tt\t5\t0\t5\t1\t1\t0")
+    @test (rec.qstart, rec.qend) == (Int(m) + 1, m)
+end
+
+@testset "Integer parsing" begin
+    # Integers are parsed 8 bytes at a time, unless they have more than 7 digits,
+    # or are close to the end of the line. Test both cases for all digit counts.
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    m = Int(typemax(UInt32))
+    alnlen(x) = x isa PAFRecord ? x.alnlen : x
+    for n_digits in 1:11, n_zeros in 0:9
+        s = "0"^n_zeros * first("9182736450918273645", n_digits)
+        n = parse(Int, s)
+        expected = n > m ? Errors.IntegerOverflow : n
+        # alnlen is close to the end of the line, except when there is aux data
+        @test alnlen(with_replaced(good, 11, s)) == expected
+        @test alnlen(with_replaced(good * "\tcm:i:1", 11, s)) == expected
+        # Same with a bad byte after the integer
+        @test with_replaced(good, 11, s * "/") == (n > m ? Errors.IntegerOverflow : Errors.BadInteger)
+    end
+
+    # A bad byte at every position of an integer, including bytes which may carry
+    # into the next byte when adding to them.
+    for n_digits in 1:12, pos in 1:n_digits, bad in (0x2f, 0x3a, 0x20, 0x00, 0xfa, 0xff, UInt8('a'))
+        bytes = collect(codeunits(first("123456789123", n_digits)))
+        bytes[pos] = bad
+        s = String(bytes)
+        for field in (10, 11, 12)
+            # 1234567891 fits in an UInt32, so only 11 digits overflow before the bad byte
+            expected = pos > 11 ? Errors.IntegerOverflow : Errors.BadInteger
+            @test with_replaced(good, field, s) == expected
+        end
+    end
+end
+
+@testset "Empty intervals" begin
+    # Empty intervals are accepted anywhere within the sequence, including at its
+    # start and end. They become empty one-based ranges.
+    for (start, stop) in [(0, 0), (5, 5), (10, 10)]
+        rec = parse(PAFRecord, "q\t10\t$start\t$stop\t+\tt\t10\t$start\t$stop\t0\t0\t0")
+        @test (rec.qstart, rec.qend) == (start + 1, stop)
+        @test (rec.tstart, rec.tend) == (start + 1, stop)
+        @test isempty(rec.qstart:rec.qend)
+        @test isempty("0123456789"[rec.tstart:rec.tend])
+        @test query_coverage(rec) == 0.0
+        @test target_coverage(rec) == 0.0
+        @test isnan(aln_identity(rec))
+    end
+
+    # But not out of bounds
+    @test try_parse("q\t10\t11\t11\t+\tt\t10\t0\t0\t0\t0\t0").kind == Errors.PositionOutOfBounds
+    @test try_parse("q\t10\t0\t0\t+\tt\t10\t11\t11\t0\t0\t0").kind == Errors.PositionOutOfBounds
+
+    # matches and alnlen are not validated against each other
+    rec = parse(PAFRecord, "q\t10\t0\t5\t+\tt\t10\t0\t5\t7\t3\t0")
+    @test aln_identity(rec) == 7 / 3
+    rec = parse(PAFRecord, "q\t10\t0\t5\t+\tt\t10\t0\t5\t2\t0\t0")
+    @test aln_identity(rec) == Inf
 end
 
 @testset "Bad reader" begin
@@ -193,6 +384,43 @@ end
     end
 end
 
+@testset "AbstractBufReader" begin
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    other = replace(good, "my_qname" => "other")
+    data = join([good, other, good], '\n')
+
+    # Records iterated with copy=true do not alias the reader's buffer
+    records = PAFReader(collect, CursorReader(data))
+    @test [r.qname for r in records] == ["my_qname", "other", "my_qname"]
+
+    # With copy=false, each record is a distinct view into the reader's buffer.
+    # CursorReader never moves its data, so the views stay valid here.
+    PAFReader(CursorReader(data); copy = false) do reader
+        rec = try_next!(reader)
+        @test rec.qname == "my_qname"
+        rec2 = try_next!(reader)
+        @test rec2 !== rec
+        @test rec2.qname == "other"
+    end
+    records = PAFReader(collect, CursorReader(data); copy = false)
+    @test [r.qname for r in records] == ["my_qname", "other", "my_qname"]
+
+    # try_next! respects copy: With copy=true, records stay valid after advancing,
+    # even when the reader's buffer is overwritten
+    reader = PAFReader(ChunkReader([good * "\n", other * "\n"]))
+    rec = try_next!(reader)
+    @test try_next!(reader).qname == "other"
+    @test rec.qname == "my_qname"
+
+    # Parsing a vector aliases it, but copying the record does not
+    v = collect(codeunits(good))
+    rec = try_parse(v)
+    copied = copy(rec)
+    v[1:2] .= UInt8('X')
+    @test rec.qname == "XX_qname"
+    @test copied.qname == "my_qname"
+end
+
 # We assume that aux data is correctly tested in its own package, here we just test
 # that the aux data has the right span and byte content.
 function test_aux_content(record_data::String, target_aux::String)
@@ -209,11 +437,48 @@ end
     test_aux_content(good * stringaux_with_whitespace, goodaux * stringaux_with_whitespace)
 end
 
-# Note: We currently DONT trim whitespace off ends of records, for the sole reason that
-# whitespace is allowed in string AuxData.
-# This is very annoying, because it makes parsing less robust to erroneous trailing whitespace.
-# However, I can't think of a good way to deal with this.
-# TODO: Find a better method
+@testset "Parsing lines" begin
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    expected = parse(PAFRecord, good)
+    same(rec) = rec isa PAFRecord && getfield(rec, :data) == getfield(expected, :data)
+
+    # parse accepts the same inputs as try_parse
+    for x in (good, SubString(good, 1), codeunits(good), collect(codeunits(good)), MemoryView(good))
+        @test same(parse(PAFRecord, x))
+        @test same(try_parse(x))
+    end
+    @test_throws PairwiseMappingFormat.ParserException parse(PAFRecord, codeunits("abc"))
+
+    # One optional trailing newline is stripped, also before aux data
+    @test same(try_parse(good * "\n"))
+    @test same(try_parse(good * "\r\n"))
+    @test aux_data(parse(PAFRecord, good * "\tab:Z:x\r\n"))["ab"] == "x"
+
+    # Any other newline is an error
+    @test try_parse(good * "\n\n").kind == Errors.EmbeddedNewline
+    @test try_parse(good * "\r\n\n").kind == Errors.EmbeddedNewline
+    @test try_parse(good * "\n" * good).kind == Errors.EmbeddedNewline
+    @test try_parse(replace(good, "my_qname" => "my\nqname")).kind == Errors.EmbeddedNewline
+    @test try_parse(good * "\tab:Z:x\ny").kind == Errors.EmbeddedNewline
+    @test try_parse("\n").kind == Errors.TooFewFields
+
+    # An embedded \r is data
+    @test parse(PAFRecord, replace(good, "my_qname" => "my\rqname")).qname == "my\rqname"
+
+    # Other trailing whitespace is not stripped, but part of the last field
+    @test try_parse(good * " ").kind == Errors.BadInteger
+    @test try_parse(good * "\r").kind == Errors.BadInteger
+    # A trailing tab begins an empty aux field, which is only invalid when accessed
+    @test try_parse(good * "\t") isa PAFRecord
+    @test try_parse(good * " \n").kind == Errors.BadInteger
+    @test aux_data(parse(PAFRecord, good * "\tab:Z:x \r\n"))["ab"] == "x "
+    # A trailing \r is kept in aux data, where it is invalid for Z values
+    @test collect(MemoryView(aux_data(parse(PAFRecord, good * "\tab:Z:x\r")))) == codeunits("ab:Z:x\r")
+end
+
+# Note: We don't trim whitespace off ends of records, because whitespace is allowed in
+# string AuxData. Trailing whitespace is part of the last field, and may make it invalid.
+# After the records, a file may end with whitespace-only lines.
 @testset "Trailing whitespace" begin
     data = "my_qname	301156	3	301145	+	my_tname	6701780	2764860	3066002	301142	301142	0	an:Z: dljdl \r\n"
     data *= "some	5	3	4	+	other	9	5	8	2	2	0\r\n"
@@ -230,6 +495,243 @@ end
     PAFReader(IOBuffer(data)) do reader
         @test first(reader, 2) isa Vector{PAFRecord}
         @test try_next!(reader).kind == Errors.EmptyNonTailingLine
+    end
+
+    # Blank line in the middle, where the buffer ends right after the blank line
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    reader = PAFReader(ChunkReader([good * "\n\n", good * "\n" * good * "\n"]))
+    @test try_next!(reader) isa PAFRecord
+    @test try_next!(reader).kind == Errors.EmptyNonTailingLine
+
+    # Trailing whitespace delivered in multiple chunks is still fine
+    reader = PAFReader(ChunkReader([good * "\n\n", "\r\n", "\n"]))
+    @test length(collect(reader)) == 1
+
+    # The first whitespace-only line ends the records, whether or not it is empty
+    for tail in ("\n \n", "\n \n\n", "\n\t\r\n \n", "\n  ", "\n\r", "\n\r\r\n", "\n\n \n")
+        @test length(PAFReader(collect, IOBuffer(good * tail))) == 1
+        reader = PAFReader(IOBuffer(good * tail))
+        @test try_next!(reader) isa PAFRecord
+        @test isempty(reader)
+        @test try_next!(reader) === nothing
+    end
+    @test isempty(PAFReader(IOBuffer(" \n\t\n")))
+
+    # ... after which only whitespace may follow
+    for tail in ("\n \n" * good, "\n\t\nx", "\n \r\n\n" * good * "\n")
+        reader = PAFReader(IOBuffer(good * tail))
+        @test try_next!(reader) isa PAFRecord
+        @test !isempty(reader)
+        @test try_next!(reader).kind == Errors.EmptyNonTailingLine
+    end
+
+    # Trailing whitespace on a record is not stripped
+    reader = PAFReader(IOBuffer(good * " \n"))
+    @test try_next!(reader).kind == Errors.BadInteger
+    reader = PAFReader(IOBuffer(good * "\tab:Z:x \n" * good * "\t\n"))
+    @test aux_data(try_next!(reader))["ab"] == "x "
+    @test try_next!(reader) isa PAFRecord # empty aux field is only invalid when accessed
+
+    # A line with non-whitespace after leading whitespace is an ordinary error
+    reader = PAFReader(IOBuffer(good * "\n \tx\n"))
+    @test try_next!(reader) isa PAFRecord
+    @test try_next!(reader).kind == Errors.BadInteger
+end
+
+@testset "Skipping invalid lines" begin
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    kinds(results) = [r isa PAFRecord ? :record : (r.kind, r.line) for r in results]
+    function read_all(reader)
+        results = []
+        while (res = try_next!(reader)) !== nothing
+            push!(results, res)
+        end
+        return results
+    end
+
+    # try_next! advances past invalid lines
+    data = join([good, "bad", good, good * "\tx", good * " ", good], '\n')
+    @test kinds(read_all(PAFReader(IOBuffer(data)))) ==
+        [:record, (Errors.TooFewFields, 2), :record, :record, (Errors.BadInteger, 5), :record]
+
+    # Including a truncated last line, as from a killed job
+    reader = PAFReader(IOBuffer(good * "\n" * good[1:30]))
+    @test try_next!(reader) isa PAFRecord
+    @test try_next!(reader).line == 2
+    @test try_next!(reader) === nothing
+    @test isempty(reader)
+
+    # A run of whitespace-only lines followed by non-whitespace is one error,
+    # reported at the first whitespace-only line. Reading continues after the run.
+    data = good * "\n\n \r\n\t\n" * good * "\n\nbad\n\n"
+    @test kinds(read_all(PAFReader(IOBuffer(data)))) == [
+        :record, (Errors.EmptyNonTailingLine, 2), :record,
+        (Errors.EmptyNonTailingLine, 6), (Errors.TooFewFields, 7),
+    ]
+
+    # Iteration throws, but also advances, so it can be resumed after catching
+    reader = PAFReader(IOBuffer(join([good, "bad", good], '\n')))
+    @test iterate(reader) isa Tuple
+    @test_throws PairwiseMappingFormat.ParserException iterate(reader)
+    @test iterate(reader) isa Tuple
+    @test iterate(reader) === nothing
+
+    # Mixing iteration and try_next! gives the same results
+    reader = PAFReader(IOBuffer(join(["bad", "bad", good], '\n')))
+    @test_throws PairwiseMappingFormat.ParserException iterate(reader)
+    @test try_next!(reader).line == 2
+    @test only(collect(reader)).qname == "my_qname"
+end
+
+@testset "peek" begin
+    good = open(readline, joinpath(@__DIR__, "example.paf"))
+    other = replace(good, "query1" => "other")
+    data = good * "\nbad\n\n  \n" * other * "\r\n\n \n"
+    results(r) = r isa PAFRecord ? String(r) : r isa PairwiseMappingFormat.ParserException ? (r.kind, r.line) : r
+    expected = PAFReader(IOBuffer(data)) do reader
+        out = []
+        while true
+            res = try_next!(reader)
+            push!(out, results(res))
+            res === nothing && return out
+        end
+    end
+    @test length(expected) == 5 # good, bad, empty non-tailing line, other, nothing
+
+    for copy in (true, false), chunk in (1, 3, 1000), n_peeks in (0, 1, 2)
+        chunks = [data[i:min(end, i + chunk - 1)] for i in 1:chunk:lastindex(data)]
+        reader = PAFReader(ChunkReader(chunks); copy)
+        for exp in expected
+            for _ in 1:n_peeks
+                @test results(peek(reader)) == exp
+            end
+            @test results(try_next!(reader)) == exp
+        end
+        @test peek(reader) === nothing
+        @test isempty(reader)
+    end
+
+    # A peeked record is valid until the reader is advanced, also with copy=false
+    PAFReader(IOBuffer(good * "\n" * other); copy = false) do reader
+        rec = peek(reader)
+        @test !isempty(reader)
+        @test Base.isdone(reader) === false
+        @test String(rec) == good
+        @test String(try_next!(reader)) == good
+        @test String(peek(reader)) == other
+        @test String(try_next!(reader)) == other
+        @test peek(reader) === nothing
+    end
+
+    # With copy=true, peeked records own their data
+    PAFReader(IOBuffer(good * "\n" * other)) do reader
+        rec = peek(reader)
+        try_next!(reader)
+        try_next!(reader)
+        @test String(rec) == good
+    end
+end
+
+@testset "isempty" begin
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+
+    # isempty does not consume records
+    reader = PAFReader(IOBuffer(join(fill(good, 3), '\n')))
+    @test !isempty(reader)
+    @test !isempty(reader)
+    @test length(collect(reader)) == 3
+    @test isempty(reader)
+
+    # isempty does not invalidate records iterated with copy=true, even when it needs to
+    # fill the buffer
+    expected = parse(PAFRecord, good)
+    for chunks in ([good * "\n", good * "\n"], [good * "\n", "\n", "\r\n"], [good])
+        reader = PAFReader(ChunkReader(chunks))
+        (rec, _) = iterate(reader)
+        while !isempty(reader)
+            @test rec.qname == expected.qname
+            @test rec.tname == expected.tname
+            @test aux_data(rec) == aux_data(expected)
+            (rec, _) = iterate(reader)
+        end
+        @test rec.qname == expected.qname
+        @test rec.tname == expected.tname
+        @test iterate(reader) === nothing
+    end
+
+    # isdone does not fill the buffer when a view returned by try_next! is live,
+    # but isempty does
+    reader = PAFReader(ChunkReader([good * "\n", good * "\n"]); copy = false)
+    rec = try_next!(reader)
+    @test Base.isdone(reader) === missing
+    @test rec.qname == "my_qname"
+    @test !isempty(reader)
+    @test try_next!(reader) isa PAFRecord
+    @test isempty(reader)
+
+    inputs = [
+        "", "\n", "\r\n", "\n\n \t\r\n", good, good * "\n", good * "\r\n\n",
+        good * "\n\n" * good, good * "\nbad", good * "\n \n", good * "\n\r",
+        good * "\n\r\r\n", " ", "\nV", good * "\n\n\n\nx",
+        good * "\n \n" * good, good * "\n\t \r\n  ", " \tx", good * "\n \n\tx",
+        "bad\n" * good, good * "\nbad\n" * good * "\n", "bad\r\nbad\n\n \n" * good,
+    ]
+    # Empty chunks are not allowed, since fill_buffer returning zero signals EOF
+    function chunkings(data)
+        splits = [filter!(!isempty, [data[1:i], data[(i + 1):end]]) for i in 0:length(data)]
+        return push!(splits, [string(c) for c in data])
+    end
+    # Summarize the results of reading all of `reader`, continuing past errors.
+    # Each call must advance the reader, so the number of results is bounded.
+    function read_all(reader, max_results)
+        results = []
+        while (res = try_next!(reader)) !== nothing
+            push!(results, res isa PAFRecord ? copy(getfield(res, :data)) : res)
+            length(results) > max_results && error("Reader did not advance")
+        end
+        return results
+    end
+    for data in inputs
+        expected_results = read_all(PAFReader(IOBuffer(data)), ncodeunits(data))
+        for chunks in chunkings(data)
+            @test read_all(PAFReader(ChunkReader(chunks)), ncodeunits(data)) == expected_results
+        end
+    end
+
+    for data in inputs, chunks in chunkings(data), copy in (true, false)
+        # isdone and isempty agree with try_next!, and isdone never invalidates
+        # the record returned by try_next!. With copy=true, no view is live, so
+        # isdone is never missing, and isempty does not invalidate the record either.
+        # Reading continues past errors.
+        reader = PAFReader(ChunkReader(chunks); copy)
+        (rec, expected) = (nothing, nothing)
+        while true
+            maybe_done = Base.isdone(reader)
+            copy && @test maybe_done isa Bool
+            rec === nothing || @test getfield(rec, :data) == getfield(expected, :data)
+            done = isempty(reader)
+            copy && rec !== nothing && @test getfield(rec, :data) == getfield(expected, :data)
+            maybe_done === missing || @test maybe_done == done
+            res = try_next!(reader)
+            @test done == (res === nothing)
+            res === nothing && break
+            (rec, expected) = res isa PAFRecord ? (res, Base.copy(res)) : (nothing, nothing)
+        end
+
+        # When iterating with copy=true, no view is live, so isdone is never missing
+        reader = PAFReader(ChunkReader(chunks))
+        while true
+            done = Base.isdone(reader)
+            @test done isa Bool
+            it = try
+                iterate(reader)
+            catch e
+                e isa PairwiseMappingFormat.ParserException || rethrow()
+                e
+            end
+            @test done == (it === nothing)
+            it === nothing && break
+        end
     end
 end
 
