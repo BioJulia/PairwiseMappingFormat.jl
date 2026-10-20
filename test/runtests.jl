@@ -329,11 +329,48 @@ end
     test_aux_content(good * stringaux_with_whitespace, goodaux * stringaux_with_whitespace)
 end
 
-# Note: We currently DONT trim whitespace off ends of records, for the sole reason that
-# whitespace is allowed in string AuxData.
-# This is very annoying, because it makes parsing less robust to erroneous trailing whitespace.
-# However, I can't think of a good way to deal with this.
-# TODO: Find a better method
+@testset "Parsing lines" begin
+    good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
+    expected = parse(PAFRecord, good)
+    same(rec) = rec isa PAFRecord && getfield(rec, :data) == getfield(expected, :data)
+
+    # parse accepts the same inputs as try_parse
+    for x in (good, SubString(good, 1), codeunits(good), collect(codeunits(good)), MemoryView(good))
+        @test same(parse(PAFRecord, x))
+        @test same(try_parse(x))
+    end
+    @test_throws PairwiseMappingFormat.ParserException parse(PAFRecord, codeunits("abc"))
+
+    # One optional trailing newline is stripped, also before aux data
+    @test same(try_parse(good * "\n"))
+    @test same(try_parse(good * "\r\n"))
+    @test aux_data(parse(PAFRecord, good * "\tab:Z:x\r\n"))["ab"] == "x"
+
+    # Any other newline is an error
+    @test try_parse(good * "\n\n").kind == Errors.EmbeddedNewline
+    @test try_parse(good * "\r\n\n").kind == Errors.EmbeddedNewline
+    @test try_parse(good * "\n" * good).kind == Errors.EmbeddedNewline
+    @test try_parse(replace(good, "my_qname" => "my\nqname")).kind == Errors.EmbeddedNewline
+    @test try_parse(good * "\tab:Z:x\ny").kind == Errors.EmbeddedNewline
+    @test try_parse("\n").kind == Errors.TooFewFields
+
+    # An embedded \r is data
+    @test parse(PAFRecord, replace(good, "my_qname" => "my\rqname")).qname == "my\rqname"
+
+    # Other trailing whitespace is not stripped, but part of the last field
+    @test try_parse(good * " ").kind == Errors.BadInteger
+    @test try_parse(good * "\r").kind == Errors.BadInteger
+    # A trailing tab begins an empty aux field, which is only invalid when accessed
+    @test try_parse(good * "\t") isa PAFRecord
+    @test try_parse(good * " \n").kind == Errors.BadInteger
+    @test aux_data(parse(PAFRecord, good * "\tab:Z:x \r\n"))["ab"] == "x "
+    # A trailing \r is kept in aux data, where it is invalid for Z values
+    @test collect(MemoryView(aux_data(parse(PAFRecord, good * "\tab:Z:x\r")))) == codeunits("ab:Z:x\r")
+end
+
+# Note: We don't trim whitespace off ends of records, because whitespace is allowed in
+# string AuxData. Trailing whitespace is part of the last field, and may make it invalid.
+# After the records, a file may end with whitespace-only lines.
 @testset "Trailing whitespace" begin
     data = "my_qname	301156	3	301145	+	my_tname	6701780	2764860	3066002	301142	301142	0	an:Z: dljdl \r\n"
     data *= "some	5	3	4	+	other	9	5	8	2	2	0\r\n"
@@ -361,6 +398,36 @@ end
     # Trailing whitespace delivered in multiple chunks is still fine
     reader = PAFReader(ChunkReader([good * "\n\n", "\r\n", "\n"]))
     @test length(collect(reader)) == 1
+
+    # The first whitespace-only line ends the records, whether or not it is empty
+    for tail in ("\n \n", "\n \n\n", "\n\t\r\n \n", "\n  ", "\n\r", "\n\r\r\n", "\n\n \n")
+        @test length(PAFReader(collect, IOBuffer(good * tail))) == 1
+        reader = PAFReader(IOBuffer(good * tail))
+        @test try_next!(reader) isa PAFRecord
+        @test isempty(reader)
+        @test try_next!(reader) === nothing
+    end
+    @test isempty(PAFReader(IOBuffer(" \n\t\n")))
+
+    # ... after which only whitespace may follow
+    for tail in ("\n \n" * good, "\n\t\nx", "\n \r\n\n" * good * "\n")
+        reader = PAFReader(IOBuffer(good * tail))
+        @test try_next!(reader) isa PAFRecord
+        @test !isempty(reader)
+        @test try_next!(reader).kind == Errors.EmptyNonTailingLine
+    end
+
+    # Trailing whitespace on a record is not stripped
+    reader = PAFReader(IOBuffer(good * " \n"))
+    @test try_next!(reader).kind == Errors.BadInteger
+    reader = PAFReader(IOBuffer(good * "\tab:Z:x \n" * good * "\t\n"))
+    @test aux_data(try_next!(reader))["ab"] == "x "
+    @test try_next!(reader) isa PAFRecord # empty aux field is only invalid when accessed
+
+    # A line with non-whitespace after leading whitespace is an ordinary error
+    reader = PAFReader(IOBuffer(good * "\n \tx\n"))
+    @test try_next!(reader) isa PAFRecord
+    @test try_next!(reader).kind == Errors.BadInteger
 end
 
 @testset "isempty" begin
@@ -404,6 +471,7 @@ end
         "", "\n", "\r\n", "\n\n \t\r\n", good, good * "\n", good * "\r\n\n",
         good * "\n\n" * good, good * "\nbad", good * "\n \n", good * "\n\r",
         good * "\n\r\r\n", " ", "\nV", good * "\n\n\n\nx",
+        good * "\n \n" * good, good * "\n\t \r\n  ", " \tx", good * "\n \n\tx",
     ]
     # Empty chunks are not allowed, since fill_buffer returning zero signals EOF
     function chunkings(data)

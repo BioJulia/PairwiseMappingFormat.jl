@@ -380,6 +380,7 @@ module Errors
         InvalidZero
         PositionOutOfBounds
         LineTooLong
+        EmbeddedNewline
     end
 end # module Errors
 
@@ -451,6 +452,8 @@ function Base.showerror(io::IO, err::ParserException)
         "Query or target start or end position is longer than query/target length"
     elseif kind == Errors.LineTooLong
         "Line is too long. PairwiseMappingFormat.jl can't handle lines of 2147483647 bytes or longer"
+    elseif kind == Errors.EmbeddedNewline
+        "Line contains a newline. Only a single trailing \"\\n\" or \"\\r\\n\" is allowed"
     end
     print(buf, s)
     return print(io, String(take!(buf)))
@@ -471,6 +474,11 @@ end
 Try parsing `x` into a `PAFRecord`. `x` may be any type that implements
 `MemoryView`, such as `String` or `Vector{UInt8}`.
 
+`x` must contain a single line, optionally ending with `"\\n"` or `"\\r\\n"`.
+Any other `\\n` in `x` gives an error of kind `EmbeddedNewline`.
+Other trailing whitespace, including a lone `\\r`, is not stripped:
+It is part of the last field, and may make it invalid.
+
 !!! warning
     The resulting record is a view into the memory of `x`, and does not copy it.
     If `x` is mutated, the record is mutated too, and may become invalid.
@@ -487,13 +495,47 @@ julia> typeof(PAF.try_parse("invalid string"))
 PairwiseMappingFormat.ParserException
 ```
 
-See also: [`PAFRecord`](@ref), [`try_next!`](@ref)
+See also: [`PAFRecord`](@ref), [`try_next!`](@ref), [`parse`](@ref Base.parse(::Type{PAFRecord}, ::Any))
 """
 try_parse(x) = try_parse(ImmutableMemoryView(x))
-try_parse(x::ImmutableMemoryView{UInt8}) = parse_line(x)
 
-function Base.parse(::Type{PAFRecord}, s::Union{String, SubString{String}})
-    y = try_parse(s)
+# Strip one optional trailing \n or \r\n
+function strip_newline(x::ImmutableMemoryView{UInt8})::ImmutableMemoryView{UInt8}
+    (isempty(x) || @inbounds(x[end]) != UInt8('\n')) && return x
+    has_cr = length(x) > 1 && @inbounds(x[end - 1]) == UInt8('\r')
+    return @inbounds x[1:(end - 1 - has_cr)]
+end
+
+function try_parse(x::ImmutableMemoryView{UInt8})
+    x = strip_newline(x)
+    newline = findfirst(==(UInt8('\n')), x)
+    newline === nothing || return ParserException(newline, Errors.EmbeddedNewline)
+    return parse_line(x)
+end
+
+"""
+    parse(::Type{PAFRecord}, x)::PAFRecord
+
+Parse `x` into a `PAFRecord`, or throw a [`ParserException`](@ref
+PairwiseMappingFormat.ParserException) if `x` is not a valid PAF line.
+`x` may be any type that implements `MemoryView`, such as `String` or `Vector{UInt8}`.
+See [`try_parse`](@ref PairwiseMappingFormat.try_parse) for what counts as a line.
+
+!!! warning
+    The resulting record is a view into the memory of `x`, and does not copy it.
+    If `x` is mutated, the record is mutated too, and may become invalid.
+    Use `copy` on the record to obtain a record that owns its data.
+
+# Examples
+```jldoctest
+julia> record = parse(PAFRecord, codeunits("q\\t10\\t0\\t5\\t+\\tt\\t20\\t5\\t10\\t5\\t5\\t60\\n"));
+
+julia> (record.qname, record.tname, record.mapq)
+("q", "t", 60)
+```
+"""
+function Base.parse(::Type{PAFRecord}, x)
+    y = try_parse(x)
     return y isa PAFRecord ? y : throw(y)
 end
 
@@ -656,6 +698,12 @@ Iterating this object returns a `PAFRecord` for each valid line of input,
 and throws a [`ParserException`](@ref) when an invalid record is found.
 For efficiency, the auxiliary fields are not validated until they are accessed.
 
+Lines end with `"\\n"` or `"\\r\\n"`. Other whitespace at the end of a line is not stripped:
+It is part of the last field, and may make it invalid.
+The first line consisting only of whitespace (spaces, tabs, `\\r` and `\\n`) marks the end
+of the records. All remaining input must then be whitespace, else a `ParserException` of
+kind `EmptyNonTailingLine` is thrown.
+
 If `io` is an `IO`, it is wrapped in a `BufferIO.BufReader` with a buffer size
 given by the keyword `buf_size`.
 
@@ -811,12 +859,15 @@ end
 function next_view!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
     consume_previous!(reader)
     (buffer, last_index, line_len) = buffer_line(reader.io)
-    # If the line is empty, this is the end of the stream, if the rest of it is whitespace.
-    iszero(last_index) && return check_tail(reader, buffer)
-    # If this results in an error, we return the error.
-    res = parse_line(buffer[1:last_index])
-    res isa ParserException &&
+    line = @inbounds buffer[1:last_index]
+    res = parse_line(line)
+    if res isa ParserException
+        # A whitespace-only line, which can never be a valid record, is the end of the
+        # stream if the rest of it is whitespace. Checking only on errors keeps the
+        # check off the hot path.
+        all(is_whitespace, line) && return check_tail(reader, buffer)
         return ParserException(res.kind, getfield(res, :index_in_line), reader.line)
+    end
     # Else, we update the reader. This means `next!` will continuously return
     # an error if an error is found.
     reader.to_consume = line_len
@@ -855,9 +906,11 @@ function buffer_line(io::ExpandReader)::Tuple{ImmutableMemoryView{UInt8}, Int, I
     return (buffer, newline - (1 + has_windows_newline), newline)
 end
 
-# Called when the next line is empty. Return `nothing` if the rest of the stream is
-# whitespace, else an error.
-# The buffer may end after the empty line, so keep filling it until EOF.
+is_whitespace(b::UInt8) = b ∈ (UInt8('\r'), UInt8('\n'), UInt8('\t'), UInt8(' '))
+
+# Called when the next line is whitespace-only, with `buffer` beginning at that line.
+# Return `nothing` if the rest of the stream is whitespace, else an error.
+# The buffer may end after the line, so keep filling it until EOF.
 function check_tail(reader::PAFReader, buffer::ImmutableMemoryView{UInt8})::Union{Nothing, ParserException}
     io = reader.io
     line = reader.line
@@ -868,7 +921,7 @@ function check_tail(reader::PAFReader, buffer::ImmutableMemoryView{UInt8})::Unio
             col += 1
             line += b == UInt8('\n')
             col *= b != UInt8('\n')
-            if b ∉ (UInt8('\r'), UInt8('\n'), UInt8('\t'), UInt8(' '))
+            if !is_whitespace(b)
                 return ParserException(Errors.EmptyNonTailingLine, col % Int32, line)
             end
         end
@@ -883,38 +936,20 @@ end
 # If that is not possible, because a returned record is a view into the buffer and the
 # buffer must be filled to determine the answer, return `missing`.
 function Base.isdone(reader::PAFReader, _...)::Union{Bool, Missing}
-    buffer = get_buffer(reader.io)
-    rest = buffer[(reader.to_consume + 1):end]
-    # Fast path: If the next line begins with any byte other than a newline, it is not
-    # empty, so `try_next!` would return a record or an error.
-    if !isempty(rest)
-        b = @inbounds rest[1]
-        b ∈ (UInt8('\r'), UInt8('\n')) || return false
-    end
+    rest = get_buffer(reader.io)[(reader.to_consume + 1):end]
+    # The reader is done exactly when the rest of the stream is whitespace:
+    # If the next line contains non-whitespace, `try_next!` returns a record or an error.
+    # Else, it is the end of the stream only if the rest of it is whitespace.
+    # This usually returns at the first byte.
+    all(is_whitespace, rest) || return false
     # If no view is live, we can freely consume the previous line and fill the buffer.
-    reader.view_live || return isdone_filling!(reader)
-    # Check if the next line is empty, mirroring `buffer_line`.
-    isempty(rest) && return missing
-    b = @inbounds rest[1]
-    if b == UInt8('\r')
-        length(rest) == 1 && return missing
-        @inbounds(rest[2]) == UInt8('\n') || return false
-    elseif b != UInt8('\n')
-        # Line is not empty, so `try_next!` returns a record or an error.
-        return false
-    end
-    # The next line is empty, so the reader is done if the rest of the stream is
-    # whitespace, mirroring `check_tail`. We can only tell if it isn't.
-    for b in rest
-        b ∉ (UInt8('\r'), UInt8('\n'), UInt8('\t'), UInt8(' ')) && return false
-    end
-    return missing
+    # Else, we can't tell if the stream continues with non-whitespace.
+    return reader.view_live ? missing : isdone_filling!(reader)
 end
 
 function isdone_filling!(reader::PAFReader)::Bool
     consume_previous!(reader)
-    (buffer, last_index, _) = buffer_line(reader.io)
-    return iszero(last_index) && check_tail(reader, buffer) === nothing
+    return check_tail(reader, get_buffer(reader.io)) === nothing
 end
 
 """
