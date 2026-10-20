@@ -886,7 +886,54 @@ true
 ```
 """
 function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
+    return expose(reader, next_view!(reader))
+end
+
+"""
+    peek(reader::PAFReader) -> Union{Nothing, PAFRecord, ParserException}
+
+Return what [`try_next!`](@ref) would return, without advancing the reader.
+That is, return `nothing` if the reader is empty, a `ParserException` if the next record
+is invalid, and the next record if it is valid.
+Like `try_next!`, this does not throw on invalid records.
+
+While this does not advance the reader, if the reader was constructed with `copy=false`,
+it invalidates any record previously returned by the reader, since it may need to
+fill the reader's buffer.
+A record returned by `peek` for a reader with `copy=false` is valid until the reader is
+advanced, or `peek` or `isempty` is called again.
+With `copy=true`, peeked records own their data, and are never invalidated.
+
+# Examples
+```jldoctest
+julia> reader = PAFReader(open(path_to_paf));
+
+julia> peek(reader).qname
+"query1"
+
+julia> try_next!(reader).qname
+"query1"
+
+julia> peek(reader).qname
+"another query"
+
+julia> close(reader)
+```
+"""
+function Base.peek(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
+    # Invalidates the live view, if any, such that the buffer may be filled
+    consume_previous!(reader)
+    line = reader.line
     res = next_view!(reader)
+    # Undo the advancement. Since the previous line was consumed above, the
+    # buffer begins at the peeked line, and nothing needs to be consumed.
+    reader.to_consume = 0
+    reader.line = line
+    return expose(reader, res)
+end
+
+# Return a parsed view to the user, either as a copy or as a live view
+function expose(reader::PAFReader, res::Union{Nothing, PAFRecord, ParserException})
     res isa PAFRecord || return res
     # A copy owns its data, so the view never reaches the user
     reader.copy && return copy(res)

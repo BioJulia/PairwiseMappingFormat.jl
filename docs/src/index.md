@@ -301,6 +301,7 @@ query_coverage
 target_coverage
 try_next!
 Base.isempty(::PAFReader)
+Base.peek(::PAFReader)
 is_mapped
 PairwiseMappingFormat.Errors
 PairwiseMappingFormat.try_parse
