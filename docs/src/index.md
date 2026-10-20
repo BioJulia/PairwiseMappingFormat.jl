@@ -273,11 +273,12 @@ true
 ```
 
 ## Misc info
-* The `PAFReader` cannot handle trailing whitespace, except trailing newlines at
-  the end of the file. This is because trailing whitespace may be significant
-  in some records, e.g. if it ends with an auxiliary field of the element type
-  `Z`.
-  A PAF record with trailing whitespace is considered invalid.
+* Lines end with `\n` or `\r\n`. Other whitespace at the end of a record is not
+  stripped, because it may be significant, e.g. if the record ends with an auxiliary
+  field of the element type `Z`. Instead, it is part of the last field, and may make it
+  invalid.
+* The first line in a file consisting only of whitespace marks the end of the records.
+  All remaining input must then be whitespace.
 
 
 ## Reference
@@ -294,6 +295,7 @@ Base.isempty(::PAFReader)
 is_mapped
 PairwiseMappingFormat.Errors
 PairwiseMappingFormat.try_parse
+Base.parse(::Type{PAFRecord}, ::Any)
 PairwiseMappingFormat.ParserException
 PairwiseMappingFormat.UnmappedError
 ```

@@ -44,6 +44,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** Fields 6-12 of unmapped records are now validated like those of mapped
   records, except that the integer fields may be zero. Previously, their content was ignored.
 
+- `parse(PAFRecord, x)` now accepts the same inputs as `try_parse`, i.e. any `x` that
+  implements `MemoryView`, such as `Vector{UInt8}`. Previously, it only accepted
+  `String` and `SubString{String}`.
+- **Breaking:** `parse` and `try_parse` now strip one optional trailing `\n` or `\r\n`,
+  and reject any other `\n` with the new error kind `EmbeddedNewline`.
+  Previously, a trailing newline was part of the last field, and an embedded newline
+  was accepted in names and auxiliary data.
+- **Breaking:** In `PAFReader`, the first line consisting only of whitespace now marks the
+  end of the records, after which all input must be whitespace.
+  Previously, only an empty line did, and a line of e.g. a single space was a
+  `TooFewFields` error.
+
 ### Removed
 - **Breaking:** The `PAFRecord(buffer_size::Int)` constructor.
 
