@@ -65,10 +65,7 @@ Use [`is_mapped`](@ref) to check if a record is mapped.
 * `qstart`, `qend`, `tstart` and `tend::Int`, and give the starting and
   ending positions of the alignments on the query and target strand.
   These uses one-based, closed interval indexing as usual in Julia, but unlike
-  the underlying PAF format.
-  The intervals may be empty, in which case the ending position is the starting
-  position minus one, so `qstart:qend` is an empty range. Hence, the ending positions
-  are always >= the starting ones minus one, and always <= the query/target lengths.
+  the underlying PAF format. The intervals `qstart:qend` or `tstart:tend` may be empty.
 * `matches::Int` gives the number of nucleotides / residues which match
   (i.e. are equal) in the alignment.
 * `alnlen::Int` gives the length of the alignment
@@ -142,7 +139,7 @@ end
 end
 
 """
-    is_mapped(x::PAFRecord) -> Bool
+    is_mapped(x::PAFRecord)::Bool
 
 Compute whether the `PAFRecord` is mapped.
 Only the properties `qname` and `qlen`, and the auxiliary data of an unmapped record
@@ -294,7 +291,7 @@ function mapq(record::PAFRecord)::Union{Int, Nothing}
 end
 
 """
-    aln_identity(rec::Record) -> Float64
+    aln_identity(rec::Record)::Float64
 
 Return the nucleotide / residue identity, defined as the number of
 matches divided by the alignment length.
@@ -317,7 +314,7 @@ function aln_identity(record::PAFRecord)::Float64
 end
 
 """
-    query_coverage(rec::Record) -> Float64
+    query_coverage(rec::Record)::Float64
 
 Compute the fraction of the query covered by the alignment.
 Throws an [`UnmappedError`](@ref) if the record is unmapped.
@@ -336,7 +333,7 @@ function query_coverage(record::PAFRecord)::Float64
 end
 
 """
-    target_coverage(rec::Record) -> Float64
+    target_coverage(rec::Record)::Float64
 
 Compute the fraction of the target covered by the alignment.
 Throws an [`UnmappedError`](@ref) if the record is unmapped.
@@ -355,7 +352,7 @@ function target_coverage(record::PAFRecord)::Float64
 end
 
 """
-    aux_data(rec::Record) -> XAMAuxData.SAM.Auxiliary
+    aux_data(rec::Record)::XAMAuxData.SAM.Auxiliary
 
 Return a lazily evaluated and validated `SAM.Auxiliary`, which is an `AbstractDict`
 of the auxiliary fields at the end of the record.
@@ -513,7 +510,7 @@ macro var"?"(expr)
 end
 
 """
-    try_parse(x) -> Union{PAFRecord, ParserException}
+    try_parse(x)::Union{PAFRecord, ParserException}
 
 Try parsing `x` into a `PAFRecord`. `x` may be any type that implements
 `MemoryView`, such as `String` or `Vector{UInt8}`.
@@ -889,7 +886,7 @@ function Base.iterate(reader::PAFReader, (::Nothing) = nothing)
 end
 
 """
-    try_next!(reader::PAFReader) -> Union{Nothing, PAFRecord, ParserException}
+    try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
 
 Try to read a record from the [`PAFReader`](@ref) and advance the reader. This may yield one of three options:
 * If the reader is empty, return `nothing` and do not advance the reader
@@ -933,19 +930,14 @@ function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException
 end
 
 """
-    peek(reader::PAFReader) -> Union{Nothing, PAFRecord, ParserException}
+    peek(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
 
 Return what [`try_next!`](@ref) would return, without advancing the reader.
-That is, return `nothing` if the reader is empty, a `ParserException` if the next record
-is invalid, and the next record if it is valid.
-Like `try_next!`, this does not throw on invalid records.
 
 While this does not advance the reader, if the reader was constructed with `copy=false`,
-it invalidates any record previously returned by the reader, since it may need to
-fill the reader's buffer.
-A record returned by `peek` for a reader with `copy=false` is valid until the reader is
-advanced, or `peek` or `isempty` is called again.
-With `copy=true`, peeked records own their data, and are never invalidated.
+it invalidates any record previously returned by the reader. Similarly, records
+returned by the function with a reade with `copy=false` are invalidated like records
+produced by iterating the reader.
 
 # Examples
 ```jldoctest
@@ -1106,8 +1098,8 @@ Check whether `reader` has no more records, i.e. whether [`try_next!`](@ref) wou
 `copy=false`, it may invalidate the previous record by mutating the reader's inner state.
 
 In contrast, `Base.isdone(reader)`, never invalidates a record,
-and returns `missing` if it can't determine whether the reader is done without invalidating
-previous records.
+and returns `missing` if it can't determine whether the reader is done
+without invalidating previous records.
 """
 function Base.isempty(reader::PAFReader)
     done = Base.isdone(reader)
