@@ -659,11 +659,13 @@ For efficiency, the auxiliary fields are not validated until they are accessed.
 If `io` is an `IO`, it is wrapped in a `BufferIO.BufReader` with a buffer size
 given by the keyword `buf_size`.
 
-If `copy` is false, the iterated records are views into the reader's buffer, and are
-only valid until the reader is advanced. Calling [`isempty`](@ref Base.isempty(::PAFReader))
-on the reader may also invalidate them.
+If `copy` is false, the records returned by iterating the reader, or by [`try_next!`](@ref),
+are views into the reader's buffer, and are only valid until the reader is advanced.
+Calling [`isempty`](@ref Base.isempty(::PAFReader)) on the reader may also invalidate them.
 This removes a few allocations and copies per iteration, but records must not be used
 after the reader has moved on, e.g. by storing them.
+Using an invalidated record is not detected: Its data may be silently overwritten
+with the content of later lines. Use `copy` on a record to obtain a record that owns its data.
 
 # Examples
 ```jldoctest
@@ -701,6 +703,7 @@ mutable struct PAFReader{I <: AbstractBufReader}
     copy::Bool
     # Whether a record which is a view into the buffer of `io` has been returned to the
     # user, and is still valid. While this is set, `isdone` must not fill the buffer.
+    # Only ever set when `copy` is false.
     view_live::Bool
 end
 
@@ -746,16 +749,13 @@ function Base.copy(record::PAFRecord)
 end
 
 function Base.iterate(reader::PAFReader, (::Nothing) = nothing)
-    res = next_view!(reader)
+    res = try_next!(reader)
     return if res isa ParserException
         throw(res)
     elseif res === nothing
         nothing
     else
-        # A copy owns its data, so the view never reaches the user
-        reader.view_live = !reader.copy
-        rec = reader.copy ? copy(res) : res
-        (rec, nothing)
+        (res, nothing)
     end
 end
 
@@ -771,9 +771,10 @@ Try to read a record from the [`PAFReader`](@ref) and advance the reader. This m
 Even if the reader itself is not advanced, it may still fill its internal buffer, advancing
 the `IO` object it wraps.
 
-The returned record is a view into the reader's buffer. Its data is invalidated by
-the next call to `try_next!`, and may be invalidated by calling `isempty` on the reader.
-Use `copy` on the record to obtain a record that owns its data.
+If the reader was constructed with `copy=true` (the default), the returned record owns
+its data. If `copy=false`, the record is a view into the reader's buffer, which is
+invalidated when the reader is advanced, and may be invalidated by calling
+[`isempty`](@ref Base.isempty(::PAFReader)) on the reader. See [`PAFReader`](@ref).
 
 # Examples
 ```jldoctest
@@ -799,11 +800,14 @@ true
 """
 function try_next!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
     res = next_view!(reader)
-    res isa PAFRecord && (reader.view_live = true)
+    res isa PAFRecord || return res
+    # A copy owns its data, so the view never reaches the user
+    reader.copy && return copy(res)
+    reader.view_live = true
     return res
 end
 
-# Like `try_next!`, but the returned record is not yet exposed to the user
+# Like `try_next!`, but always returns a view, which is not yet exposed to the user
 function next_view!(reader::PAFReader)::Union{Nothing, PAFRecord, ParserException}
     consume_previous!(reader)
     (buffer, last_index, line_len) = buffer_line(reader.io)
@@ -917,8 +921,8 @@ end
     isempty(reader::PAFReader)::Bool
 
 Check whether `reader` has no more records, i.e. whether [`try_next!`](@ref) would return
-`nothing`. This does not advance the reader, but may invalidate the previous record
-by mutating the reader's inner state.
+`nothing`. This does not advance the reader, but if the reader was constructed with
+`copy=false`, it may invalidate the previous record by mutating the reader's inner state.
 
 In contrast, `Base.isdone(reader)`, never invalidates a record,
 and returns `missing` if it can't determine whether the reader is done without invalidating

@@ -297,6 +297,13 @@ end
     records = PAFReader(collect, CursorReader(data); copy = false)
     @test [r.qname for r in records] == ["my_qname", "other", "my_qname"]
 
+    # try_next! respects copy: With copy=true, records stay valid after advancing,
+    # even when the reader's buffer is overwritten
+    reader = PAFReader(ChunkReader([good * "\n", other * "\n"]))
+    rec = try_next!(reader)
+    @test try_next!(reader).qname == "other"
+    @test rec.qname == "my_qname"
+
     # Parsing a vector aliases it, but copying the record does not
     v = collect(codeunits(good))
     rec = try_parse(v)
@@ -385,7 +392,7 @@ end
 
     # isdone does not fill the buffer when a view returned by try_next! is live,
     # but isempty does
-    reader = PAFReader(ChunkReader([good * "\n", good * "\n"]))
+    reader = PAFReader(ChunkReader([good * "\n", good * "\n"]); copy = false)
     rec = try_next!(reader)
     @test Base.isdone(reader) === missing
     @test rec.qname == "my_qname"
@@ -403,20 +410,23 @@ end
         splits = [filter!(!isempty, [data[1:i], data[(i + 1):end]]) for i in 0:length(data)]
         return push!(splits, [string(c) for c in data])
     end
-    for data in inputs, chunks in chunkings(data)
+    for data in inputs, chunks in chunkings(data), copy in (true, false)
         # isdone and isempty agree with try_next!, and isdone never invalidates
-        # the record returned by try_next!
-        reader = PAFReader(ChunkReader(chunks))
+        # the record returned by try_next!. With copy=true, no view is live, so
+        # isdone is never missing, and isempty does not invalidate the record either.
+        reader = PAFReader(ChunkReader(chunks); copy)
         (rec, expected) = (nothing, nothing)
         while true
             maybe_done = Base.isdone(reader)
+            copy && @test maybe_done isa Bool
             rec === nothing || @test getfield(rec, :data) == getfield(expected, :data)
             done = isempty(reader)
+            copy && rec !== nothing && @test getfield(rec, :data) == getfield(expected, :data)
             maybe_done === missing || @test maybe_done == done
             res = try_next!(reader)
             @test done == (res === nothing)
             res isa PAFRecord || break
-            (rec, expected) = (res, copy(res))
+            (rec, expected) = (res, Base.copy(res))
         end
 
         # When iterating with copy=true, no view is live, so isdone is never missing

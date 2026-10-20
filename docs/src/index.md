@@ -47,13 +47,16 @@ julia> PAFReader(open(path_to_paf)) do reader
 ```
 
 The [`PAFReader`](@ref) constructor takes an optional keyword `copy`, which defaults to `true`.
-If it is `false`, the iterated [`PAFRecord`](@ref)s are views into the reader's buffer,
-instead of owning a copy of their data.
+If it is `false`, the [`PAFRecord`](@ref)s returned by iterating the reader, or by
+[`try_next!`](@ref), are views into the reader's buffer, instead of owning a copy of their data.
 Such a record is only valid until the reader is advanced, and may be invalidated by
 calling [`isempty`](@ref Base.isempty(::PAFReader)) on the reader.
 This reduces allocations and copying and gives a slight speed increase, but may result
-in bugs if records from previous iterations are stored, since their data may be
-silently overwritten. Use `copy` on a record to obtain a record that owns its data:
+in bugs if records from previous iterations are stored.
+Using an invalidated record is not detected, and does not throw an error. Instead, its data
+may be silently overwritten with the content of later lines, so it may appear to be a
+different, or even malformed, record.
+Use `copy` on a record to obtain a record that owns its data:
 
 ```jldoctest
 julia> PAFReader(open(path_to_paf); copy=false) do reader
