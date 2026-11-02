@@ -16,6 +16,9 @@ jobs:
         julia-version: ['1', '1.11']
         os: [ubuntu-latest, macOS-latest, windows-latest]
         experimental: [false]
+        # Runner's native architecture. Must be a matrix key, so that the x86 entry below
+        # overrides it and becomes a new job, instead of being merged into an existing job.
+        arch: [default]
         include:
           # Include nightly, but experimental, so it's allowed to fail without
           # failing CI.
@@ -23,6 +26,11 @@ jobs:
             os: ubuntu-latest
             experimental: true
             fail_ci_if_error: false
+          # 32-bit Linux (i686), which setup-julia calls x86
+          - julia-version: '1'
+            os: ubuntu-latest
+            arch: x86
+            experimental: false
 
     steps:
       - name: Checkout Repository
@@ -31,6 +39,7 @@ jobs:
         uses: julia-actions/setup-julia@latest
         with:
           version: ${{ matrix.julia-version }}
+          arch: ${{ matrix.arch || 'default' }}
       - name: Run Tests
         uses: julia-actions/julia-runtest@latest
       - name: Create CodeCov

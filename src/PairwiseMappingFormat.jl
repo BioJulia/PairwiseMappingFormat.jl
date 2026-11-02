@@ -60,15 +60,15 @@ Use [`is_mapped`](@ref) to check if a record is mapped.
 * `qname::StringView`. The query name, May be empty, and contain any bytes
   except `\\t` and `\\n`.
 * `tname::StringView`. Target name. Like `qname`.
-* `qlen` and `tlen::Int`, and gives the length of the query and target
+* `qlen` and `tlen::Int64`, and gives the length of the query and target
   sequences, respectively. This must be > 0, and at most `typemax(UInt32)` (about 4.3 Gbp).
-* `qstart`, `qend`, `tstart` and `tend::Int`, and give the starting and
+* `qstart`, `qend`, `tstart` and `tend::Int64`, and give the starting and
   ending positions of the alignments on the query and target strand.
   These uses one-based, closed interval indexing as usual in Julia, but unlike
   the underlying PAF format. The intervals `qstart:qend` or `tstart:tend` may be empty.
-* `matches::Int` gives the number of nucleotides / residues which match
+* `matches::Int64` gives the number of nucleotides / residues which match
   (i.e. are equal) in the alignment.
-* `alnlen::Int` gives the length of the alignment
+* `alnlen::Int64` gives the length of the alignment
 * `mapq::Union{Int, Nothing}` gives the mapping quality, or `nothing` if
   this information is unavailable.
 * `is_rc::Bool` tells if the query and target strands are reverse-complement
@@ -110,14 +110,15 @@ struct PAFRecord
 end
 
 # Since the interface of the records are defined in terms of its
-# properties, we need to be able to abstract over them
+# properties, we need to be able to abstract over them.
+# Positions and lengths are Int64, not Int, since they may not fit in a 32-bit Int.
 # Note: This is inlined so `sym` is constant folded, leaving only the branch for
 # that property, and the cheap check for mapped-ness.
 @inline function Base.getproperty(record::PAFRecord, sym::Symbol)
     return if sym === :qname
         qname(record)
     elseif sym === :qlen
-        Int(getfield(record, :qlen))
+        Int64(getfield(record, :qlen))
     elseif sym === :tname
         check_mapped(record, sym)
         tname(record)
@@ -126,10 +127,10 @@ end
         mapq(record)
     elseif sym in (:qstart, :tstart)
         check_mapped(record, sym)
-        Int(getfield(record, sym)) + 1
+        Int64(getfield(record, sym)) + 1
     elseif sym in (:qend, :tlen, :tend, :matches, :alnlen)
         check_mapped(record, sym)
-        Int(getfield(record, sym))
+        Int64(getfield(record, sym))
     elseif sym === :is_rc
         check_mapped(record, sym)
         is_rc(record)
@@ -450,7 +451,8 @@ TooFewFields
 struct ParserException <: Exception
     kind::Errors.Err
     index_in_line::Int32
-    line::Int
+    # Int64, not Int, such that it does not overflow for huge files on 32-bit platforms
+    line::Int64
 end
 
 ParserException(index::Integer, kind::Errors.Err) = ParserException(kind, index, 1)
@@ -608,7 +610,7 @@ function parse_line(mem::ImmutableMemoryView{UInt8})::Union{PAFRecord, ParserExc
 
     # Load the strand field. The rest of the line is at least 14 bytes: The strand, the
     # tab after it, an empty tname, and six single-digit integers separated by six tabs.
-    i + 13 > lastindex(mem) &&
+    lastindex(mem) - i < 13 &&
         return ParserException(lastindex(mem) % Int32, Errors.TooFewFields)
     b = @inbounds mem[i]
     strand = if b == UInt8('*')
@@ -643,21 +645,20 @@ function parse_line(mem::ImmutableMemoryView{UInt8})::Union{PAFRecord, ParserExc
     end
 
     # The aux data begins at `i`.
-    # The integers have been checked to fit in an UInt32 by `parse_int`.
     return PAFRecord(
         mem,
         length(qname) % Int32,
         first(tname) % Int32,
         length(tname) % Int32,
         i % Int32,
-        qlen % UInt32,
-        qstart % UInt32,
-        qend % UInt32,
-        tlen % UInt32,
-        tstart % UInt32,
-        tend % UInt32,
-        matches % UInt32,
-        alnlen % UInt32,
+        qlen,
+        qstart,
+        qend,
+        tlen,
+        tstart,
+        tend,
+        matches,
+        alnlen,
         mapq,
         strand,
     )
@@ -670,7 +671,7 @@ end
 function finish_unmapped(
         mem::ImmutableMemoryView{UInt8},
         qname::UnitRange{Int},
-        qlen::Int,
+        qlen::UInt32,
         i::Int,
     )::Union{PAFRecord, ParserException}
     (_, i) = @? parse_str(mem, i)
@@ -685,7 +686,7 @@ function finish_unmapped(
     mapq > 255 && return ParserException(i % Int32, Errors.IntegerOverflow)
 
     # The aux data begins at `i`.
-    return PAFRecord(mem, length(qname) % Int32, 1, 0, i % Int32, qlen % UInt32, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x00)
+    return PAFRecord(mem, length(qname) % Int32, 1, 0, i % Int32, qlen, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x00)
 end
 
 # Just get the index of the next \t
@@ -713,14 +714,13 @@ end
 
 # Compute the value of the first `nd` digits of `x`, with `nd` in 0:8, and `x`
 # as in `n_leading_digits`.
-function swar_digits(x::UInt64, nd::Int)::Int
+function swar_digits(x::UInt64, nd::Int)::UInt64
     # Subtracting may borrow from bytes after the digits, which are shifted out.
     # Shifting moves the digits to the most significant bytes, with zeros in front.
     x = (x - 0x3030303030303030) << ((8 - nd) << 3)
     x = ((x * 10) + (x >> 8)) & 0x00ff00ff00ff00ff
     x = ((x * 100) + (x >> 16)) & 0x0000ffff0000ffff
-    x = ((x * 10000) + (x >> 32)) & 0x00000000ffffffff
-    return x % Int
+    return ((x * 10000) + (x >> 32)) & 0x00000000ffffffff
 end
 
 # Load 8 bytes beginning at index i as little-endian. Index i + 7 must be in bounds.
@@ -733,13 +733,15 @@ function parse_int(
         from::Int,
         allow_zero::Bool,
         at_end::Bool = false,
-    )::Union{Tuple{Int, Int}, ParserException}
+    )::Union{Tuple{UInt32, Int}, ParserException}
     # Fast path: Parse integers of up to 7 digits from 8 bytes at once, avoiding a
     # data-dependent loop. Longer integers, i.e. >= 10 Mbp, continue in the loop below.
     # A similar second fast path for 8-10 digits was measured to be slower.
-    n = 0
+    # Accumulate in an UInt64, not Int, which can overflow on 32-bit platforms
+    n = UInt64(0)
     start = from
-    if from + 7 <= lastindex(v)
+    # Note: Written so it can't overflow, unlike `from + 7 <= lastindex(v)`.
+    if lastindex(v) - from >= 7
         x = load_u64(v, from)
         nd = n_leading_digits(x)
         n = swar_digits(x, nd)
@@ -749,12 +751,13 @@ function parse_int(
             @inbounds(v[i]) == UInt8('\t') || return ParserException(i % Int32, Errors.BadInteger)
             iszero(nd) && return ParserException(i % Int32, Errors.EmptyInteger)
             (!allow_zero & iszero(n)) && return ParserException(i % Int32, Errors.InvalidZero)
-            return (n, i + 1)
+            # At most 7 digits, so this fits in an UInt32
+            return (n % UInt32, i + 1)
         end
         start = from + 8
     end
-    # Slow path. Accumulate in an Int, which can't overflow because we check against
-    # typemax(UInt32) after every digit. The result therefore fits in an UInt32.
+    # Slow path. `n` can't overflow, because we check against typemax(UInt32) after
+    # every digit. The result therefore fits in an UInt32.
     for i in start:lastindex(v)
         b = @inbounds v[i]
         # If we hit a tab, this field is over.
@@ -762,7 +765,7 @@ function parse_int(
             i == from && return ParserException(i % Int32, Errors.EmptyInteger)
             (!allow_zero & iszero(n)) &&
                 return ParserException(i % Int32, Errors.InvalidZero)
-            return (n, i + 1)
+            return (n % UInt32, i + 1)
         end
         b ∈ 0x30:0x39 || return ParserException(i % Int32, Errors.BadInteger)
         n = 10 * n + (b - 0x30)
@@ -778,7 +781,7 @@ function parse_int(
     elseif from > lastindex(v)
         ParserException(from % Int32, Errors.EmptyInteger)
     else
-        (n, lastindex(v) + 1)
+        (n % UInt32, lastindex(v) + 1)
     end
 end
 
@@ -838,7 +841,8 @@ mutable struct PAFReader{I <: AbstractBufReader}
     # yet been consumed from `io`. Consuming is deferred to the next call to `try_next!`,
     # such that the record, which is a view into the buffer of `io`, stays valid.
     to_consume::Int
-    line::Int
+    # Int64, not Int, such that it does not overflow for huge files on 32-bit platforms
+    line::Int64
     # Whether to iterate copies of the parsed records
     copy::Bool
     # Whether a record which is a view into the buffer of `io` has been returned to the
