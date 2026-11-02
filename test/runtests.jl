@@ -6,24 +6,8 @@ using Test
 using FormatSpecimens
 using MemoryViews
 using Aqua
-using BufferIO: CursorReader, AbstractBufReader
-import BufferIO: get_buffer, fill_buffer, consume
-
-# A reader that delivers data in fixed chunks, like a pipe would
-mutable struct ChunkReader <: AbstractBufReader
-    chunks::Vector{Vector{UInt8}}
-    buf::Vector{UInt8}
-end
-ChunkReader(chunks) = ChunkReader(map(c -> collect(codeunits(c)), chunks), UInt8[])
-get_buffer(r::ChunkReader) = ImmutableMemoryView(r.buf)
-function fill_buffer(r::ChunkReader)
-    isempty(r.chunks) && return 0
-    c = popfirst!(r.chunks)
-    append!(r.buf, c)
-    return length(c)
-end
-consume(r::ChunkReader, n::Int) = (deleteat!(r.buf, 1:n); nothing)
-Base.close(::ChunkReader) = nothing
+using BufferIO: CursorReader
+using BufferIO.Testing: BoundedReader, ChunkedReader
 
 using XAMAuxData: XAMAuxData
 using XAMAuxData.SAM: AuxTag
@@ -230,6 +214,21 @@ end
     # Aux data is found after the mapq field
     rec = try_parse("read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0\tcm:i:4")
     @test Dict(aux_data(rec)) == Dict{AuxTag, Any}("cm" => 4)
+
+    # Shortest possible records: Empty names and single-digit integers
+    rec = parse(PAFRecord, "\t1\t0\t1\t+\t\t1\t0\t1\t1\t1\t0")
+    @test rec.qname == rec.tname == ""
+    @test (rec.qlen, rec.tlen, rec.qstart, rec.qend, rec.mapq) == (1, 1, 1, 1, 0)
+    @test isempty(aux_data(rec))
+    rec = parse(PAFRecord, "\t1\t0\t0\t*\t\t0\t0\t0\t0\t0\t0")
+    @test !is_mapped(rec)
+    @test rec.qname == ""
+    # Removing any byte from them makes them invalid
+    for line in ("\t1\t0\t1\t+\t\t1\t0\t1\t1\t1\t0", "\t1\t0\t0\t*\t\t0\t0\t0\t0\t0\t0")
+        for i in 1:ncodeunits(line)
+            @test try_parse(line[1:(i - 1)] * line[(i + 1):end]) isa PairwiseMappingFormat.ParserException
+        end
+    end
 end
 
 @testset "Errors" begin
@@ -407,10 +406,20 @@ end
 
     # try_next! respects copy: With copy=true, records stay valid after advancing,
     # even when the reader's buffer is overwritten
-    reader = PAFReader(ChunkReader([good * "\n", other * "\n"]))
+    reader = PAFReader(ChunkedReader([good * "\n", other * "\n"]))
     rec = try_next!(reader)
     @test try_next!(reader).qname == "other"
     @test rec.qname == "my_qname"
+
+    # The last line may lack a newline, also when filling the buffer at EOF
+    # invalidates views of it, and when the buffer can't hold the whole line
+    data = good * "\n" * other
+    for max_buffer_size in (4, 200), copy in (true, false)
+        reader = PAFReader(BoundedReader(data, max_buffer_size; max_fill = 3); copy)
+        @test try_next!(reader).qname == "my_qname"
+        @test try_next!(reader).qname == "other"
+        @test try_next!(reader) === nothing
+    end
 
     # Parsing a vector aliases it, but copying the record does not
     v = collect(codeunits(good))
@@ -499,12 +508,12 @@ end
 
     # Blank line in the middle, where the buffer ends right after the blank line
     good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
-    reader = PAFReader(ChunkReader([good * "\n\n", good * "\n" * good * "\n"]))
+    reader = PAFReader(ChunkedReader([good * "\n\n", good * "\n" * good * "\n"]))
     @test try_next!(reader) isa PAFRecord
     @test try_next!(reader).kind == Errors.EmptyNonTailingLine
 
     # Trailing whitespace delivered in multiple chunks is still fine
-    reader = PAFReader(ChunkReader([good * "\n\n", "\r\n", "\n"]))
+    reader = PAFReader(ChunkedReader([good * "\n\n", "\r\n", "\n"]))
     @test length(collect(reader)) == 1
 
     # The first whitespace-only line ends the records, whether or not it is empty
@@ -600,7 +609,7 @@ end
 
     for copy in (true, false), chunk in (1, 3, 1000), n_peeks in (0, 1, 2)
         chunks = [data[i:min(end, i + chunk - 1)] for i in 1:chunk:lastindex(data)]
-        reader = PAFReader(ChunkReader(chunks); copy)
+        reader = PAFReader(ChunkedReader(chunks); copy)
         for exp in expected
             for _ in 1:n_peeks
                 @test results(peek(reader)) == exp
@@ -646,7 +655,7 @@ end
     # fill the buffer
     expected = parse(PAFRecord, good)
     for chunks in ([good * "\n", good * "\n"], [good * "\n", "\n", "\r\n"], [good])
-        reader = PAFReader(ChunkReader(chunks))
+        reader = PAFReader(ChunkedReader(chunks))
         (rec, _) = iterate(reader)
         while !isempty(reader)
             @test rec.qname == expected.qname
@@ -661,7 +670,7 @@ end
 
     # isdone does not fill the buffer when a view returned by try_next! is live,
     # but isempty does
-    reader = PAFReader(ChunkReader([good * "\n", good * "\n"]); copy = false)
+    reader = PAFReader(ChunkedReader([good * "\n", good * "\n"]); copy = false)
     rec = try_next!(reader)
     @test Base.isdone(reader) === missing
     @test rec.qname == "my_qname"
@@ -694,7 +703,7 @@ end
     for data in inputs
         expected_results = read_all(PAFReader(IOBuffer(data)), ncodeunits(data))
         for chunks in chunkings(data)
-            @test read_all(PAFReader(ChunkReader(chunks)), ncodeunits(data)) == expected_results
+            @test read_all(PAFReader(ChunkedReader(chunks)), ncodeunits(data)) == expected_results
         end
     end
 
@@ -703,7 +712,7 @@ end
         # the record returned by try_next!. With copy=true, no view is live, so
         # isdone is never missing, and isempty does not invalidate the record either.
         # Reading continues past errors.
-        reader = PAFReader(ChunkReader(chunks); copy)
+        reader = PAFReader(ChunkedReader(chunks); copy)
         (rec, expected) = (nothing, nothing)
         while true
             maybe_done = Base.isdone(reader)
@@ -719,7 +728,7 @@ end
         end
 
         # When iterating with copy=true, no view is live, so isdone is never missing
-        reader = PAFReader(ChunkReader(chunks))
+        reader = PAFReader(ChunkedReader(chunks))
         while true
             done = Base.isdone(reader)
             @test done isa Bool

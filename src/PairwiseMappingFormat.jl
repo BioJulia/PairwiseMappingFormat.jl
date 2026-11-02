@@ -549,6 +549,8 @@ end
 
 function try_parse(x::ImmutableMemoryView{UInt8})
     x = strip_newline(x)
+    # Check the length before searching for newlines, since error positions are Int32
+    @? check_line_length(x)
     newline = findfirst(==(UInt8('\n')), x)
     newline === nothing || return ParserException(newline, Errors.EmbeddedNewline)
     return parse_line(x)
@@ -580,10 +582,20 @@ function Base.parse(::Type{PAFRecord}, x)
     return y isa PAFRecord ? y : throw(y)
 end
 
+# Indices into the line, and lastindex(line) + 1, where the aux data of a record may begin,
+# are stored as Int32. Every index can be converted to Int32 if this returns `nothing`.
+function check_line_length(mem::ImmutableMemoryView{UInt8})::Union{Nothing, ParserException}
+    return if lastindex(mem) >= typemax(Int32)
+        ParserException(typemax(Int32), Errors.LineTooLong)
+    else
+        nothing
+    end
+end
+
 function parse_line(mem::ImmutableMemoryView{UInt8})::Union{PAFRecord, ParserException}
-    # Note: The aux data may begin at lastindex(mem) + 1, which must fit in an Int32
-    lastindex(mem) >= typemax(Int32) &&
-        return ParserException(typemax(Int32), Errors.LineTooLong)
+    # All the indices converted to Int32 by `% Int32` below can't be truncated, because
+    # of this check.
+    @? check_line_length(mem)
     # Read fields incrementally. `i` is the index to read from, beginning at 1.
     # The parse_x functions will return the next index to begin from (after the tab)
     (qname, i) = @? parse_str(mem, 1)
@@ -594,9 +606,9 @@ function parse_line(mem::ImmutableMemoryView{UInt8})::Union{PAFRecord, ParserExc
     qend ≥ qstart || return ParserException(i % Int32, Errors.BackwardsIndices)
     qend > qlen && return ParserException(i % Int32, Errors.PositionOutOfBounds)
 
-    # Load the strand field. We need at least 14 more bytes to encode 7 more mandatory fields
-    # plus 7 more tabs.
-    i + 14 > lastindex(mem) &&
+    # Load the strand field. The rest of the line is at least 14 bytes: The strand, the
+    # tab after it, an empty tname, and six single-digit integers separated by six tabs.
+    i + 13 > lastindex(mem) &&
         return ParserException(lastindex(mem) % Int32, Errors.TooFewFields)
     b = @inbounds mem[i]
     strand = if b == UInt8('*')
@@ -819,6 +831,8 @@ It is part of the last field, and may make it invalid.
 
 """
 mutable struct PAFReader{I <: AbstractBufReader}
+    # TODO: If Julia ever gets computed field types, we can have this field be typed
+    # `is_expandable(I) ? I : ExpandReader{I}`.
     const io::ExpandReader{I}
     # Number of bytes of the last parsed line, including its newline, which have not
     # yet been consumed from `io`. Consuming is deferred to the next call to `try_next!`,
@@ -1029,10 +1043,12 @@ function buffer_line(io::ExpandReader)::Tuple{ImmutableMemoryView{UInt8}, Int, I
     while newline === nothing
         # The number of bytes in buffer we have already memchrd searching for a newline
         n_scanned = length(buffer)
+        n_filled = fill_buffer(io)
+        # Filling invalidates the old view, even if no bytes were added
+        buffer = get_buffer(io)
         # This signals EOF - we might still have data in the buffer, if the underlying stream
         # ends with a record that doesn't end in a newline
-        iszero(fill_buffer(io)) && return (buffer, length(buffer), length(buffer))
-        buffer = get_buffer(io)
+        iszero(n_filled) && return (buffer, length(buffer), length(buffer))
         newline = findnext(==(0x0a), buffer, n_scanned + 1)
     end
     # Last index before \n, and before \r if the newline is \r\n as on Windows
