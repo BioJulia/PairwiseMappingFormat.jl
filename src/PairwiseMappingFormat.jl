@@ -57,14 +57,14 @@ See also: [`PAFReader`](@ref)
 The following properties may be used. For unmapped records, only `qname` and `qlen`
 are available, and accessing any other property throws an [`UnmappedError`](@ref).
 Use [`is_mapped`](@ref) to check if a record is mapped.
-* `qname::StringView`. The query name, May be empty, and contain any bytes
+* `qname::StringView`. The query name. May be empty, and contain any bytes
   except `\\t` and `\\n`.
 * `tname::StringView`. Target name. Like `qname`.
-* `qlen` and `tlen::Int64`, and gives the length of the query and target
+* `qlen` and `tlen::Int64` give the length of the query and target
   sequences, respectively. This must be > 0, and at most `typemax(UInt32)` (about 4.3 Gbp).
-* `qstart`, `qend`, `tstart` and `tend::Int64`, and give the starting and
+* `qstart`, `qend`, `tstart` and `tend::Int64` give the starting and
   ending positions of the alignments on the query and target strand.
-  These uses one-based, closed interval indexing as usual in Julia, but unlike
+  These use one-based, closed interval indexing as usual in Julia, but unlike
   the underlying PAF format. The intervals `qstart:qend` or `tstart:tend` may be empty.
 * `matches::Int64` gives the number of nucleotides / residues which match
   (i.e. are equal) in the alignment.
@@ -222,11 +222,6 @@ function Base.propertynames(::PAFRecord)
     )
 end
 
-function PAFRecord()
-    data = ImmutableMemoryView(Memory{UInt8}())
-    return PAFRecord(data, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0xff, 0x00)
-end
-
 function Base.show(io::IO, ::MIME"text/plain", record::PAFRecord)
     buf = IOBuffer()
     is_mapped(record) || print(buf, "Unmapped ")
@@ -292,7 +287,7 @@ function mapq(record::PAFRecord)::Union{Int, Nothing}
 end
 
 """
-    aln_identity(rec::Record)::Float64
+    aln_identity(record::PAFRecord)::Float64
 
 Return the nucleotide / residue identity, defined as the number of
 matches divided by the alignment length.
@@ -315,7 +310,7 @@ function aln_identity(record::PAFRecord)::Float64
 end
 
 """
-    query_coverage(rec::Record)::Float64
+    query_coverage(record::PAFRecord)::Float64
 
 Compute the fraction of the query covered by the alignment.
 Throws an [`UnmappedError`](@ref) if the record is unmapped.
@@ -334,7 +329,7 @@ function query_coverage(record::PAFRecord)::Float64
 end
 
 """
-    target_coverage(rec::Record)::Float64
+    target_coverage(record::PAFRecord)::Float64
 
 Compute the fraction of the target covered by the alignment.
 Throws an [`UnmappedError`](@ref) if the record is unmapped.
@@ -353,7 +348,7 @@ function target_coverage(record::PAFRecord)::Float64
 end
 
 """
-    aux_data(rec::Record)::XAMAuxData.SAM.Auxiliary
+    aux_data(record::PAFRecord)::XAMAuxData.SAM.Auxiliary
 
 Return a lazily evaluated and validated `SAM.Auxiliary`, which is an `AbstractDict`
 of the auxiliary fields at the end of the record.
@@ -482,7 +477,7 @@ function Base.showerror(io::IO, err::ParserException)
     elseif kind == Errors.BadInteger
         "Integer field contains characters out of 0-9 range"
     elseif kind == Errors.InvalidStrand
-        "The strand column must be '+' or '-'"
+        "The strand column must be '+' or '-', or '*' for unmapped records"
     elseif kind == Errors.EmptyNonTailingLine
         "Whitespace-only line(s) followed by non-whitespace"
     elseif kind == Errors.BackwardsIndices
@@ -622,8 +617,10 @@ function parse_line(mem::ImmutableMemoryView{UInt8})::Union{PAFRecord, ParserExc
     else
         return ParserException(i % Int32, Errors.InvalidStrand)
     end
+    # The byte after the strand is in bounds by the length check above. If it is not a tab,
+    # the strand field is longer than one byte, like "+-".
     @inbounds mem[i + 1] == UInt8('\t') ||
-        return ParserException((i + 1) % Int32, Errors.TooFewFields)
+        return ParserException((i + 1) % Int32, Errors.InvalidStrand)
     iszero(strand) && return finish_unmapped(mem, qname, qlen, i + 2)
 
     # Load rest of the fields
@@ -785,6 +782,17 @@ function parse_int(
     end
 end
 
+# The line of the record returned by `PAFRecord()`: An unmapped record with an empty
+# query name, as written by minimap2's `--paf-no-hit`.
+# All empty records alias this memory, which is fine, since it is never mutated.
+const EMPTY_PAF_CONTENT = ImmutableMemoryView(Memory{UInt8}(codeunits("\t1\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0")))
+
+# Parsed once, such that its fields are always consistent with its line.
+# This must be defined after the parsing functions, since they are called here.
+const EMPTY_RECORD = parse(PAFRecord, EMPTY_PAF_CONTENT)
+
+PAFRecord() = EMPTY_RECORD
+
 """
     PAFReader(io::Union{IO, AbstractBufReader}; copy::Bool=true)
 
@@ -794,7 +802,7 @@ and throws a [`ParserException`](@ref) when an invalid record is found.
 
 If `copy` is false, the records returned by iterating the reader, or by [`try_next!`](@ref),
 are views into the reader's buffer, and are only valid until the reader is mutated,
-which happens on iterating the reader or, `try_next!`, `isempty`.
+which happens when iterating it, or calling `try_next!`, `peek` or `isempty` on it.
 This removes a few allocations and copies per iteration, but records must not be used
 after they are invalidated.
 
@@ -954,7 +962,7 @@ Return what [`try_next!`](@ref) would return, without advancing the reader.
 
 While this does not advance the reader, if the reader was constructed with `copy=false`,
 it invalidates any record previously returned by the reader. Similarly, records
-returned by the function with a reade with `copy=false` are invalidated like records
+returned by `peek` on a reader with `copy=false` are invalidated like records
 produced by iterating the reader.
 
 # Examples

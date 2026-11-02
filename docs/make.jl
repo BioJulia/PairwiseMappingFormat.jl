@@ -14,7 +14,7 @@ makedocs(;
     sitename = "PairwiseMappingFormat.jl",
     modules = [PairwiseMappingFormat],
     pages = ["Home" => "index.md"],
-    authors = "Jakob Nybo Nissen",
+    authors = "Jakob Nybo Andersen",
     checkdocs = :public,
     remotes = nothing,
 )
