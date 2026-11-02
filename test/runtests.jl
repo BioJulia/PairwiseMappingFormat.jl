@@ -210,7 +210,7 @@ end
     @test with_replaced(unmapped, 9, "1") == Errors.PositionOutOfBounds
     @test try_parse("read1\t1523\t0\t0\t*\t*\t10\t5\t4\t0\t0\t0").kind == Errors.BackwardsIndices
     @test try_parse("read1\t1523\t0\t0\t*\t*\t10\t0\t5\t0\t0\t0") isa PAFRecord
-    @test try_parse("read1\t1523\t0\t0\t*x*\t10\t0\t5\t0\t0\t0").kind == Errors.TooFewFields
+    @test try_parse("read1\t1523\t0\t0\t*x*\t10\t0\t5\t0\t0\t0").kind == Errors.InvalidStrand
     # Aux data is found after the mapq field
     rec = try_parse("read1\t1523\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0\tcm:i:4")
     @test Dict(aux_data(rec)) == Dict{AuxTag, Any}("cm" => 4)
@@ -229,6 +229,15 @@ end
             @test try_parse(line[1:(i - 1)] * line[(i + 1):end]) isa PairwiseMappingFormat.ParserException
         end
     end
+
+    # The empty record is consistent with its line
+    rec = PAFRecord()
+    @test !is_mapped(rec)
+    @test rec.qname == ""
+    @test rec.qlen == 1
+    @test isempty(aux_data(rec))
+    @test parse(PAFRecord, String(rec)) == rec
+    @test String(rec) == "\t1\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0"
 end
 
 @testset "Errors" begin
@@ -265,6 +274,10 @@ end
 
     # Char not valid
     @test with_replaced(good, 5, "/") == Errors.InvalidStrand
+    # The strand must be exactly one byte
+    for strand in ("", "+-", "++", "--", "-+", "**", "+ ", "+\r")
+        @test with_replaced(good, 5, strand) == Errors.InvalidStrand
+    end
 
     # Too few columns
     for i in 0:11
