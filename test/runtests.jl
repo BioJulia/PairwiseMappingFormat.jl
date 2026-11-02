@@ -293,24 +293,28 @@ end
     m = typemax(UInt32)
     rec = try_parse("q\t$m\t$(m - 1)\t$m\t+\tt\t$m\t0\t$m\t1\t1\t0")
     @test (rec.qlen, rec.qstart, rec.qend) == (m, m, m)
+    # Int64, not Int, so the values fit on 32-bit platforms
+    for sym in (:qlen, :qstart, :qend, :tlen, :tstart, :tend, :matches, :alnlen)
+        @test getproperty(rec, sym) isa Int64
+    end
     @test (rec.tlen, rec.tstart, rec.tend) == (m, 1, m)
     @test query_coverage(rec) == 1 / m
     @test target_coverage(rec) == 1.0
 
     # Empty interval at the very end of the sequence doesn't overflow
     rec = try_parse("q\t$m\t$m\t$m\t+\tt\t5\t0\t5\t1\t1\t0")
-    @test (rec.qstart, rec.qend) == (Int(m) + 1, m)
+    @test (rec.qstart, rec.qend) == (Int64(m) + 1, m)
 end
 
 @testset "Integer parsing" begin
     # Integers are parsed 8 bytes at a time, unless they have more than 7 digits,
     # or are close to the end of the line. Test both cases for all digit counts.
     good = "my_qname\t301156\t3\t301145\t+\tmy_tname\t6701780\t2764860\t3066002\t301142\t301142\t0"
-    m = Int(typemax(UInt32))
+    m = Int64(typemax(UInt32))
     alnlen(x) = x isa PAFRecord ? x.alnlen : x
     for n_digits in 1:11, n_zeros in 0:9
         s = "0"^n_zeros * first("9182736450918273645", n_digits)
-        n = parse(Int, s)
+        n = parse(Int64, s)
         expected = n > m ? Errors.IntegerOverflow : n
         # alnlen is close to the end of the line, except when there is aux data
         @test alnlen(with_replaced(good, 11, s)) == expected
